@@ -191,11 +191,11 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 	}
 
 	shareID, err := a.plex.Invite(ctx, r.Plex)
-	note := ""
-	if errors.Is(err, plex.ErrShareUnknown) {
-		// The invite went out; only removing it later needs the ID.
-		a.log.Warn("plex share ID unknown", "request", id, "err", err)
-		note = "Couldn't find the Plex share, so if they leave, remove their Plex access by hand"
+	// Neither is a failure: the account has access either way. A member
+	// can already have it after losing the media role and asking again.
+	already, unknown := errors.Is(err, plex.ErrAlreadyShared), errors.Is(err, plex.ErrShareUnknown)
+	if already || unknown {
+		a.log.Info("plex invite", "request", id, "already_shared", already, "share_unknown", unknown, "err", err)
 		err = nil
 	}
 	if err != nil {
@@ -207,15 +207,24 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 		// would now reopen the request instead of finishing it.
 		a.log.Error("record plex invite", "request", id, "err", err)
 	}
-	return a.onboard(fin, *r, userID, approver, note)
+	plexStep := "Plex invite sent to " + code(maskAccount(r.Plex))
+	if already {
+		plexStep = code(maskAccount(r.Plex)) + " already had Plex access, so no new invite was sent"
+	}
+	note := ""
+	if unknown {
+		note = "Couldn't find the Plex share, so if they leave, remove their Plex access by hand"
+	}
+	return a.onboard(fin, *r, userID, approver, plexStep, note)
 }
 
-// onboard finishes an approval once the Plex invite has gone out: media
-// role, welcome DM, then the request is closed as approved. note, if set,
-// is added to the list of steps on the post.
-func (a *access) onboard(ctx context.Context, r store.AccessRequest, userID snowflake.ID, approver, note string) (string, error) {
+// onboard finishes an approval once the account has Plex access: media
+// role, welcome DM, then the request is closed as approved. plexStep says
+// how it got access, and note, if set, is added to the list of steps on
+// the post.
+func (a *access) onboard(ctx context.Context, r store.AccessRequest, userID snowflake.ID, approver, plexStep, note string) (string, error) {
 	id := r.ID
-	steps := []string{"Plex invite sent to " + code(maskAccount(r.Plex))}
+	steps := []string{plexStep}
 	if err := a.rest.AddMemberRole(a.guild, userID, a.mediaRole, rest.WithCtx(ctx), rest.WithReason("Access request approved by "+approver)); err != nil {
 		a.log.Warn("add media role failed", "request", id, "err", err)
 		steps = append(steps, "Couldn't add the media role, add it by hand ("+err.Error()+")")
@@ -333,7 +342,8 @@ func (a *access) recoverInterrupted(ctx context.Context) error {
 				continue
 			}
 			a.log.Info("finishing access request interrupted after its invite", "request", r.ID)
-			_, err = a.onboard(ctx, r, userID, orDefault(r.DecidedBy, "an approver"), "Finished after the bot restarted")
+			_, err = a.onboard(ctx, r, userID, orDefault(r.DecidedBy, "an approver"),
+				"Plex invite sent to "+code(maskAccount(r.Plex)), "Finished after the bot restarted")
 			errs = append(errs, err)
 			continue
 		}

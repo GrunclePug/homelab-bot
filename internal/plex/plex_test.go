@@ -200,3 +200,57 @@ func TestServer(t *testing.T) {
 		t.Error("unknown server: want error")
 	}
 }
+
+// plex.tv refuses to share the server twice with one account; Invite then
+// finds the share the account already has.
+func TestInviteAlreadyShared(t *testing.T) {
+	for _, tc := range []struct {
+		name, list string
+		want       int
+		unknown    bool
+	}{
+		{"share found", `<MediaContainer><SharedServer id="71" username="friendly" email="Friend@Example.com"/></MediaContainer>`, 71, false},
+		{"share not listed", `<MediaContainer size="0"/>`, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method + " " + r.URL.Path {
+				case "GET /api/servers/abc123":
+					io.WriteString(w, serverXML)
+				case "POST /api/servers/abc123/shared_servers":
+					// As plex.tv answered on 2026-11-07.
+					w.WriteHeader(http.StatusBadRequest)
+					io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<Response code="400" status="You're already sharing this server with the invited account. Please edit your existing share."/>`)
+				case "GET /api/servers/abc123/shared_servers":
+					io.WriteString(w, tc.list)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			id, err := NewClient(srv.URL, "tok", "abc123").Invite(context.Background(), "friend@example.com")
+			if id != tc.want || !errors.Is(err, ErrAlreadyShared) || errors.Is(err, ErrShareUnknown) != tc.unknown {
+				t.Errorf("Invite = %d, %v; want %d, already shared, unknown %v", id, err, tc.want, tc.unknown)
+			}
+		})
+	}
+}
+
+// Other plex.tv errors in the <Response> shape read as plex.tv's words,
+// without the request path, which names the server.
+func TestInviteResponseError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			io.WriteString(w, serverXML)
+			return
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Response code="422" status="Invalid email address"/>`)
+	}))
+	defer srv.Close()
+	_, err := NewClient(srv.URL, "tok", "abc123").Invite(context.Background(), "friend@example.com")
+	if err == nil || err.Error() != "plex: invite: 422 Unprocessable Entity: Invalid email address" {
+		t.Errorf("err = %v", err)
+	}
+}

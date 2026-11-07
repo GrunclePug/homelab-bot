@@ -198,3 +198,38 @@ func TestShareRecoverRemoving(t *testing.T) {
 		t.Errorf("remove after recovery = %q, %v, removed %v", text, err, fp.removed)
 	}
 }
+
+// A member whose account still has a share, for example one who lost the
+// media role and asked again, is onboarded and their share is tracked.
+func TestApproveAlreadyShared(t *testing.T) {
+	ctx := context.Background()
+	a, fd, fp, st := newTestAccess(t)
+	fp.shared = map[string]int{"ann@example.com": 90}
+	submitted(t, a, fd)
+	text, err := a.approve(ctx, 1, "Bob")
+	if err != nil || !strings.HasPrefix(text, "Approved.") || !strings.Contains(text, "already had Plex access, so no new invite was sent") ||
+		strings.Contains(text, "Plex invite sent") || strings.Contains(text, "by hand") {
+		t.Fatalf("approve = %q, %v", text, err)
+	}
+	if r, _, _ := st.Request(ctx, 1); r.Status != store.StatusApproved || r.ShareID != 90 {
+		t.Errorf("status %q, share %d", r.Status, r.ShareID)
+	}
+	if !slices.Equal(fd.roles[member], []snowflake.ID{mediaRole}) || len(fd.dms(member)) != 1 || !strings.Contains(fd.dms(member)[0], "You're in!") {
+		t.Errorf("roles %v, DMs %q", fd.roles[member], fd.dms(member))
+	}
+	if err := a.memberLeft(ctx, member); err != nil || len(questions(fd)) != 1 {
+		t.Errorf("leave: %v, %d questions", err, len(questions(fd)))
+	}
+
+	// Shared, but the share can't be found: still approved, with a note.
+	a2, fd2, fp2, st2 := newTestAccess(t)
+	fp2.shared = map[string]int{"ann@example.com": 0}
+	submitted(t, a2, fd2)
+	text, err = a2.approve(ctx, 1, "Bob")
+	if err != nil || !strings.Contains(text, "already had Plex access") || !strings.Contains(text, "remove their Plex access by hand") {
+		t.Errorf("approve, share unknown = %q, %v", text, err)
+	}
+	if r, _, _ := st2.Request(ctx, 1); r.Status != store.StatusApproved || r.ShareID != 0 {
+		t.Errorf("share unknown: status %q, share %d", r.Status, r.ShareID)
+	}
+}

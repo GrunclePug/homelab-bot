@@ -81,6 +81,10 @@ func (c *Client) Sections(ctx context.Context) ([]Section, error) {
 // found, so the share can only be removed by hand.
 var ErrShareUnknown = errors.New("plex: invite sent, but its share ID is unknown")
 
+// ErrAlreadyShared means the server was already shared with the account,
+// so no invite was sent. Invite then returns the existing share's ID.
+var ErrAlreadyShared = errors.New("plex: the server is already shared with this account")
+
 // sharedServer is one account's share of the server, as plex.tv lists it.
 type sharedServer struct {
 	ID       int    `xml:"id,attr"`
@@ -91,7 +95,9 @@ type sharedServer struct {
 // Invite shares every library with a Plex account, given as its email
 // address or username, and returns the ID of the share it created.
 // plex.tv sends the invitation. If the invite went out but the share's ID
-// can't be found, it returns an error wrapping ErrShareUnknown.
+// can't be found, it returns an error wrapping ErrShareUnknown. If the
+// account already has a share, it returns that share's ID and an error
+// wrapping ErrAlreadyShared, and also ErrShareUnknown if it can't be found.
 func (c *Client) Invite(ctx context.Context, who string) (int, error) {
 	secs, err := c.Sections(ctx)
 	if err != nil {
@@ -120,6 +126,18 @@ func (c *Client) Invite(ctx context.Context, who string) (int, error) {
 		},
 	}
 	body, err := c.do(ctx, http.MethodPost, c.sharesPath(), req)
+	var se *statusError
+	if errors.As(err, &se) && se.code == http.StatusBadRequest && strings.Contains(strings.ToLower(se.text), "already sharing") {
+		id, ferr := c.findShare(ctx, who)
+		if ferr != nil || id == 0 {
+			return 0, errors.Join(ErrAlreadyShared, ErrShareUnknown)
+		}
+		return id, ErrAlreadyShared
+	}
+	if errors.As(err, &se) {
+		// The path names the server; plex.tv's own words are enough.
+		err = errors.New(se.status + ": " + se.text)
+	}
 	if err != nil {
 		// who may be an email address, and plex.tv's message might repeat
 		// it, so it's taken out of the error, which ends up in Discord.
@@ -271,33 +289,45 @@ func (c *Client) do(ctx context.Context, method, path string, in any) ([]byte, e
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, &statusError{code: resp.StatusCode, msg: fmt.Sprintf("%s %s: %s", method, path, errorText(resp.Status, b))}
+		return nil, &statusError{method: method, path: path, code: resp.StatusCode, status: resp.Status, text: errorText(b)}
 	}
 	return b, nil
 }
 
 // statusError is an answer from plex.tv outside 2xx.
 type statusError struct {
-	code int
-	msg  string
+	method, path string
+	code         int
+	status       string // such as "400 Bad Request"
+	text         string // plex.tv's message
 }
 
-func (e *statusError) Error() string { return e.msg }
+func (e *statusError) Error() string {
+	return e.method + " " + e.path + ": " + e.status + ": " + e.text
+}
 
-// errorText pulls the message out of a plex.tv error body, which is
-// usually XML such as <errors><error code="1001" message="..."/></errors>.
-func errorText(status string, body []byte) string {
+// errorText pulls the message out of a plex.tv error body. plex.tv answers
+// in two shapes: <errors><error code="1001" message="..."/></errors>, and
+// <Response code="400" status="..."/>.
+func errorText(body []byte) string {
 	var e struct {
-		Errors []struct {
+		XMLName xml.Name
+		Status  string `xml:"status,attr"`
+		Errors  []struct {
 			Code    int    `xml:"code,attr"`
 			Message string `xml:"message,attr"`
 		} `xml:"error"`
 	}
-	if xml.Unmarshal(body, &e) == nil && len(e.Errors) > 0 && e.Errors[0].Message != "" {
-		return status + ": " + e.Errors[0].Message + " (code " + strconv.Itoa(e.Errors[0].Code) + ")"
+	if xml.Unmarshal(body, &e) == nil {
+		switch {
+		case len(e.Errors) > 0 && e.Errors[0].Message != "":
+			return e.Errors[0].Message + " (code " + strconv.Itoa(e.Errors[0].Code) + ")"
+		case e.XMLName.Local == "Response" && e.Status != "":
+			return e.Status
+		}
 	}
 	if len(body) > 300 {
 		body = body[:300]
 	}
-	return status + ": " + string(bytes.TrimSpace(body))
+	return string(bytes.TrimSpace(body))
 }

@@ -79,8 +79,9 @@ type fakePlexTV struct {
 	removed    []int
 	failInvite bool
 	failRemove bool
-	noShareID  bool // invites name no share, and none is listed
-	echo       bool // the failure message repeats the invited address
+	noShareID  bool           // invites name no share, and none is listed
+	shared     map[string]int // accounts already shared with, and their share IDs
+	echo       bool           // the failure message repeats the invited address
 }
 
 func (f *fakePlexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -96,6 +97,11 @@ func (f *fakePlexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} `json:"shared_server"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
+		if _, ok := f.shared[body.Shared.Email]; ok {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `<Response code="400" status="You're already sharing this server with the invited account. Please edit your existing share."/>`)
+			return
+		}
 		if f.failInvite {
 			msg := "Unknown user"
 			if f.echo {
@@ -112,6 +118,12 @@ func (f *fakePlexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fmt.Fprintf(w, `<SharedServer id="%d"/>`, 99+len(f.invited))
+	case "GET /api/servers/srv/shared_servers":
+		io.WriteString(w, "<MediaContainer>")
+		for email, id := range f.shared {
+			fmt.Fprintf(w, `<SharedServer id="%d" email="%s"/>`, id, email)
+		}
+		io.WriteString(w, "</MediaContainer>")
 	default:
 		if id, ok := strings.CutPrefix(r.URL.Path, "/api/servers/srv/shared_servers/"); ok && r.Method == http.MethodDelete {
 			if f.failRemove {
