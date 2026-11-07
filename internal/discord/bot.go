@@ -46,6 +46,7 @@ type Bot struct {
 	qbit    *qbit.Client
 	relay   *relay
 	access  *access
+	drafts  *draftStore
 	pending *pendingStore
 	log     *slog.Logger
 }
@@ -58,6 +59,7 @@ func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *
 		replace: rs,
 		qbit:    qc,
 		pending: newPendingStore(),
+		drafts:  newDraftStore(),
 		log:     log,
 	}
 	none := discord.AllowedMentions{

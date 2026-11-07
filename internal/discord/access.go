@@ -19,7 +19,8 @@ import (
 // Custom IDs for the access request flow.
 const (
 	idAccessRequest = "access:request"
-	idAccessForm    = "access:form"
+	idAccessForm    = "access:form"      // opened from the panel
+	idAccessReform  = "access:form:edit" // reopened from a review's Edit button
 	idAccessApprove = "access:approve:"
 	idAccessDeny    = "access:deny:"
 
@@ -87,15 +88,24 @@ func panelMessage() discord.MessageCreate {
 		AddActionRow(discord.NewPrimaryButton("Request access", idAccessRequest))
 }
 
-// requestForm is the modal a member fills in.
-func requestForm() discord.ModalCreate {
-	return discord.NewModalCreate(idAccessForm, "Request media server access").
-		AddLabel("Plex email or username", discord.NewShortTextInput(inputPlex).
-			WithRequired(true).WithMinLength(2).WithMaxLength(100).
-			WithPlaceholder("The account we should invite")).
-		AddLabel("Anything the approvers should know?", discord.NewParagraphTextInput(inputNote).
-			WithRequired(false).WithMaxLength(500).
-			WithPlaceholder("Optional, for example who invited you"))
+// requestForm is the modal a member fills in, prefilled from d when they
+// come back to edit it. customID says where it was opened from.
+func requestForm(customID string, d draft) discord.ModalCreate {
+	plexInput := discord.NewShortTextInput(inputPlex).
+		WithRequired(true).WithMinLength(2).WithMaxLength(100).
+		WithPlaceholder("The account we should invite")
+	noteInput := discord.NewParagraphTextInput(inputNote).
+		WithRequired(false).WithMaxLength(500).
+		WithPlaceholder("Optional, for example who invited you")
+	if d.Plex != "" {
+		plexInput = plexInput.WithValue(d.Plex)
+	}
+	if d.Note != "" {
+		noteInput = noteInput.WithValue(d.Note)
+	}
+	return discord.NewModalCreate(customID, "Request media server access").
+		AddLabel("Plex email or username", plexInput).
+		AddLabel("Anything the approvers should know?", noteInput)
 }
 
 // canRequest says whether a member may open the request form, and if not,

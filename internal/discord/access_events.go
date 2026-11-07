@@ -31,7 +31,8 @@ func (b *Bot) accessComponent(e *events.ComponentInteractionCreate, id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
 	defer cancel()
 
-	if id == idAccessRequest {
+	switch {
+	case id == idAccessRequest:
 		why, err := b.access.canRequest(ctx, e.User().ID, hasRole(e.Member(), b.cfg.MediaRoleID))
 		switch {
 		case err != nil:
@@ -40,10 +41,43 @@ func (b *Bot) accessComponent(e *events.ComponentInteractionCreate, id string) {
 		case why != "":
 			b.ephemeral(e.CreateMessage, why)
 		default:
-			if err := e.Modal(requestForm()); err != nil {
+			if err := e.Modal(requestForm(idAccessForm, draft{})); err != nil {
 				b.log.Error("open access form", "err", err)
 			}
 		}
+		return
+
+	case strings.HasPrefix(id, idAccessEdit):
+		d, ok := b.drafts.get(strings.TrimPrefix(id, idAccessEdit), e.User().ID)
+		if !ok {
+			b.updateText(e, textDraftExpired)
+			return
+		}
+		if err := e.Modal(requestForm(idAccessReform, d)); err != nil {
+			b.log.Error("reopen access form", "err", err)
+		}
+		return
+
+	case strings.HasPrefix(id, idAccessSend):
+		d, ok := b.drafts.take(strings.TrimPrefix(id, idAccessSend), e.User().ID)
+		if !ok {
+			b.updateText(e, textDraftExpired)
+			return
+		}
+		if hasRole(e.Member(), b.cfg.MediaRoleID) {
+			b.updateText(e, textHasAccess)
+			return
+		}
+		if err := e.DeferUpdateMessage(); err != nil {
+			b.log.Error("defer access send", "err", err)
+			return
+		}
+		text, err := b.access.submit(ctx, d.UserID, e.Member().EffectiveName(), d.Plex, d.Note)
+		if err != nil {
+			b.log.Error("submit access request", "err", err)
+			text = "Couldn't send your request right now. Please try again later."
+		}
+		b.respondText(ctx, e.Token(), text)
 		return
 	}
 
@@ -83,20 +117,30 @@ func (b *Bot) accessComponent(e *events.ComponentInteractionCreate, id string) {
 
 // onModal handles the access request form.
 func (b *Bot) onModal(e *events.ModalSubmitInteractionCreate) {
-	if e.Data.CustomID != idAccessForm || !b.inGuild(e.GuildID()) || e.Member() == nil {
+	fromEdit := e.Data.CustomID == idAccessReform
+	if (e.Data.CustomID != idAccessForm && !fromEdit) || !b.inGuild(e.GuildID()) || e.Member() == nil {
 		return
 	}
-	if err := e.DeferCreateMessage(true); err != nil {
-		b.log.Error("defer access form", "err", err)
-		return
+	// Nothing is sent yet: the member first checks what they typed.
+	d := draft{
+		UserID: e.User().ID,
+		Plex:   strings.TrimSpace(e.Data.Text(inputPlex)),
+		Note:   strings.TrimSpace(e.Data.Text(inputNote)),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
-	defer cancel()
-	text, err := b.access.submit(ctx, e.User().ID, e.Member().EffectiveName(),
-		e.Data.Text(inputPlex), e.Data.Text(inputNote))
+	token := b.drafts.put(d)
+	review := reviewMessage(d, token, checkPlexAccount(d.Plex))
+	// A form reopened from a review's Edit button replaces that private
+	// review. One opened from the public panel gets a new private message:
+	// updating its message would overwrite the panel.
+	var err error
+	if fromEdit {
+		err = e.UpdateMessage(discord.NewMessageUpdate().
+			WithContent(review.Content).
+			WithComponents(review.Components...))
+	} else {
+		err = e.CreateMessage(review)
+	}
 	if err != nil {
-		b.log.Error("submit access request", "err", err)
-		text = "Couldn't send your request right now. Please try again later."
+		b.log.Error("show access review", "err", err)
 	}
-	b.respond(ctx, e.Token(), discord.NewMessageUpdate().WithContent(text))
 }
