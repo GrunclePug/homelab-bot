@@ -21,8 +21,7 @@ func full() map[string]string {
 		"RADARR_URL":                 "http://radarr.example:7878",
 		"RADARR_API_KEY":             "k3",
 		"QBIT_URL":                   "http://qbit.example:8080",
-		"QBIT_USERNAME":              "admin",
-		"QBIT_PASSWORD":              "pw",
+		"QBIT_API_KEY":               "qbt_key",
 		"DISCORD_ACCESS_CHANNEL_ID":  "100000000000000005",
 		"DISCORD_APPROVER_ROLE_ID":   "100000000000000006",
 		"PLEX_TOKEN":                 "plex-token",
@@ -57,7 +56,7 @@ func TestLoadErrors(t *testing.T) {
 		drop []string
 		want []string
 	}{
-		{name: "missing", drop: []string{"DISCORD_TOKEN", "QBIT_PASSWORD"}, want: []string{"missing DISCORD_TOKEN, QBIT_PASSWORD"}},
+		{name: "missing", drop: []string{"DISCORD_TOKEN", "QBIT_API_KEY"}, want: []string{"missing DISCORD_TOKEN, QBIT_API_KEY"}},
 		{name: "blank counts as missing", set: map[string]string{"SEERR_API_KEY": "  "}, want: []string{"missing SEERR_API_KEY"}},
 		{name: "bad id", set: map[string]string{"DISCORD_GUILD_ID": "abc"}, want: []string{"DISCORD_GUILD_ID must be a Discord ID"}},
 		{name: "bad url", set: map[string]string{"SONARR_URL": "sonarr:8989"}, want: []string{"SONARR_URL must be an http or https URL"}},

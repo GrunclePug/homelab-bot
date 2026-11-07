@@ -122,60 +122,30 @@ func TestFormat(t *testing.T) {
 	}
 }
 
-func TestClientLogin(t *testing.T) {
-	logins := 0
-	sid := "first"
+func TestClient(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v2/auth/login":
-			r.ParseForm()
-			if r.Header.Get("Referer") == "" {
-				http.Error(w, "csrf", http.StatusUnauthorized)
-				return
-			}
-			if r.PostForm.Get("username") != "admin" {
-				fmt.Fprint(w, "Fails.") // qBittorrent 4
-				return
-			}
-			if r.PostForm.Get("password") != "pw" {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized) // qBittorrent 5
-				return
-			}
-			logins++
-			http.SetCookie(w, &http.Cookie{Name: "SID", Value: sid, Path: "/"})
-			fmt.Fprint(w, "Ok.")
-		case "/api/v2/torrents/info":
-			c, err := r.Cookie("SID")
-			if err != nil || c.Value != sid {
-				http.Error(w, "Forbidden", http.StatusForbidden)
-				return
-			}
-			fmt.Fprint(w, `[{"hash":"h","name":"x","state":"downloading","progress":0.5,"size":10,"dlspeed":1,"eta":5,"priority":1}]`)
+		if r.Header.Get("Authorization") != "Bearer qbt_key" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
 		}
+		if r.URL.Path != "/api/v2/torrents/info" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `[{"hash":"h","name":"x","state":"downloading","progress":0.5,"size":10,"dlspeed":1,"eta":5,"priority":1}]`)
 	}))
 	defer srv.Close()
 	ctx := context.Background()
 
-	c := NewClient(srv.URL, "admin", "pw")
-	ts, err := c.Torrents(ctx)
+	ts, err := NewClient(srv.URL, "qbt_key").Torrents(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ts) != 1 || ts[0].State != "downloading" || ts[0].Progress != 0.5 {
+	if len(ts) != 1 || ts[0].State != "downloading" || ts[0].Progress != 0.5 || ts[0].Priority != 1 {
 		t.Errorf("torrents = %+v", ts)
 	}
-	if _, err := c.Torrents(ctx); err != nil || logins != 1 {
-		t.Errorf("second call: err %v, logins %d; want reuse of the session", err, logins)
-	}
-
-	sid = "second" // the session expires
-	if _, err := c.Torrents(ctx); err != nil || logins != 2 {
-		t.Errorf("after expiry: err %v, logins %d; want one new login", err, logins)
-	}
-
-	for _, bad := range []*Client{NewClient(srv.URL, "admin", "wrong"), NewClient(srv.URL, "nobody", "pw")} {
-		if _, err := bad.Torrents(ctx); err == nil || !strings.Contains(err.Error(), "login failed") {
-			t.Errorf("bad credentials: err = %v", err)
-		}
+	_, err = NewClient(srv.URL, "wrong").Torrents(ctx)
+	if err == nil || !strings.Contains(err.Error(), "check QBIT_API_KEY") {
+		t.Errorf("bad key: err = %v", err)
 	}
 }

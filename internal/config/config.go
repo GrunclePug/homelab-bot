@@ -36,9 +36,8 @@ type Config struct {
 	RadarrURL    string
 	RadarrAPIKey string
 
-	QbitURL      string
-	QbitUsername string
-	QbitPassword string
+	QbitURL    string
+	QbitAPIKey string
 
 	ListenAddr string
 	DBPath     string
@@ -124,8 +123,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	c.RadarrAPIKey = get("RADARR_API_KEY")
 
 	c.QbitURL = baseURL("QBIT_URL")
-	c.QbitUsername = get("QBIT_USERNAME")
-	c.QbitPassword = get("QBIT_PASSWORD")
+	c.QbitAPIKey = get("QBIT_API_KEY")
 
 	c.ListenAddr = optional("LISTEN_ADDR", DefaultListenAddr)
 	if _, _, err := net.SplitHostPort(c.ListenAddr); err != nil {

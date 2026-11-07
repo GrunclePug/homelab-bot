@@ -100,7 +100,7 @@ func run() error {
 		Sonarr: arr.NewSonarr(cfg.SonarrURL, cfg.SonarrAPIKey),
 		Radarr: arr.NewRadarr(cfg.RadarrURL, cfg.RadarrAPIKey),
 	}
-	qc := qbit.NewClient(cfg.QbitURL, cfg.QbitUsername, cfg.QbitPassword)
+	qc := qbit.NewClient(cfg.QbitURL, cfg.QbitAPIKey)
 
 	bot, err := discord.New(discord.Config{
 		Token:            cfg.DiscordToken,

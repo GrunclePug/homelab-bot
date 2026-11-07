@@ -9,9 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
-	"net/url"
-	"strings"
 	"time"
 )
 
@@ -27,101 +24,46 @@ type Torrent struct {
 	Priority int     `json:"priority"`
 }
 
-// Client is a qBittorrent Web API client. It logs in on first use and
-// again whenever the session has expired.
+// Client is a qBittorrent Web API client. It authenticates with the Web
+// UI's API key, which qBittorrent 5.2 and later accept as a Bearer token.
 type Client struct {
-	baseURL  string
-	username string
-	password string
-	http     *http.Client
+	baseURL string
+	apiKey  string
+	http    *http.Client
 }
 
 // NewClient returns a client for the qBittorrent Web UI at baseURL.
-func NewClient(baseURL, username, password string) *Client {
-	jar, _ := cookiejar.New(nil) // cookiejar.New never returns an error
+func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
-		baseURL:  baseURL,
-		username: username,
-		password: password,
-		http:     &http.Client{Timeout: 15 * time.Second, Jar: jar},
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		http:    &http.Client{Timeout: 15 * time.Second},
 	}
 }
-
-// errForbidden means the session cookie is missing or expired.
-var errForbidden = errors.New("forbidden")
 
 // Torrents lists every torrent.
 func (c *Client) Torrents(ctx context.Context) ([]Torrent, error) {
-	list, err := c.torrents(ctx)
-	if errors.Is(err, errForbidden) {
-		if err := c.login(ctx); err != nil {
-			return nil, err
-		}
-		list, err = c.torrents(ctx)
-	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v2/torrents/info", nil)
 	if err != nil {
 		return nil, fmt.Errorf("qbittorrent: list torrents: %w", err)
 	}
-	return list, nil
-}
-
-func (c *Client) torrents(ctx context.Context) ([]Torrent, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v2/torrents/info", nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setReferer(req)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("qbittorrent: list torrents: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusForbidden {
-		return nil, errForbidden
-	}
-	if resp.StatusCode != http.StatusOK {
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, errors.New("qbittorrent: API key rejected: check QBIT_API_KEY")
+	default:
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(msg))
+		return nil, fmt.Errorf("qbittorrent: list torrents: %s: %s", resp.Status, bytes.TrimSpace(msg))
 	}
 	var list []Torrent
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		return nil, fmt.Errorf("decode torrents: %w", err)
+		return nil, fmt.Errorf("qbittorrent: decode torrents: %w", err)
 	}
 	return list, nil
-}
-
-func (c *Client) login(ctx context.Context) error {
-	form := url.Values{"username": {c.username}, "password": {c.password}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v2/auth/login",
-		strings.NewReader(form.Encode()))
-	if err != nil {
-		return fmt.Errorf("qbittorrent: login: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	c.setReferer(req)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("qbittorrent: login: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	switch {
-	case resp.StatusCode == http.StatusForbidden:
-		return errors.New("qbittorrent: login refused: this IP is banned after too many failed logins")
-	case resp.StatusCode == http.StatusUnauthorized:
-		// qBittorrent 5 answers bad credentials with 401; older versions
-		// with 200 and "Fails.".
-		return errors.New("qbittorrent: login failed: check QBIT_USERNAME and QBIT_PASSWORD")
-	case resp.StatusCode != http.StatusOK:
-		return fmt.Errorf("qbittorrent: login: %s", resp.Status)
-	case strings.TrimSpace(string(body)) != "Ok.":
-		return errors.New("qbittorrent: login failed: check QBIT_USERNAME and QBIT_PASSWORD")
-	}
-	return nil
-}
-
-// setReferer satisfies qBittorrent's CSRF check, which wants Referer or
-// Origin to match the host being called.
-func (c *Client) setReferer(req *http.Request) {
-	req.Header.Set("Referer", c.baseURL)
 }

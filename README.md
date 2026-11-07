@@ -26,7 +26,7 @@ homelab-bot relays Seerr issue reports into a Discord channel, with buttons that
 * Go 1.27.3 or newer
 * Make
 * Docker with Compose, to run it as a container
-* A Discord bot application, and Seerr, Sonarr v4, Radarr and qBittorrent 5 reachable from the bot
+* A Discord bot application, and Seerr, Sonarr v4, Radarr and qBittorrent 5.2 or newer reachable from the bot
 
 ### Build
 
@@ -77,8 +77,7 @@ Settings come from environment variables, loaded from `.env` if it exists. Varia
 | `RADARR_URL` | | | Radarr base URL |
 | `RADARR_API_KEY` | | | Radarr API key |
 | `QBIT_URL` | | | qBittorrent Web UI base URL |
-| `QBIT_USERNAME` | | | qBittorrent Web UI user |
-| `QBIT_PASSWORD` | | | qBittorrent Web UI password |
+| `QBIT_API_KEY` | | | qBittorrent Web UI API key |
 | `LISTEN_ADDR` | | `:8080` | Address for the Seerr webhook and `/healthz` |
 | `PORT` | | `8080` | Docker Compose only: host port mapped to the listener |
 | `DB_PATH` | | `data/homelab-bot.db` | SQLite database file |
