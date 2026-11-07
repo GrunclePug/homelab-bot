@@ -2,6 +2,9 @@ services:
   homelab-bot:
     build: .
     restart: unless-stopped
+    # Room for the bot to finish webhooks (30s) and clicks such as a
+    # Replace (90s) before it is killed.
+    stop_grace_period: 2m30s
     env_file: .env
     environment:
       LISTEN_ADDR: ":8080"

@@ -34,6 +34,11 @@ const (
 const maxMenus = 5
 
 func (b *Bot) onComponent(e *events.ComponentInteractionCreate) {
+	if !b.enter() {
+		b.ephemeral(e.CreateMessage, textRestarting)
+		return
+	}
+	defer b.handlers.Done()
 	if !b.inGuild(e.GuildID()) {
 		b.ephemeral(e.CreateMessage, "This bot only works in its own server.")
 		return

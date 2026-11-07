@@ -133,6 +133,11 @@ func (b *Bot) accessComponent(e *events.ComponentInteractionCreate, id string) {
 
 // onModal handles the access request form.
 func (b *Bot) onModal(e *events.ModalSubmitInteractionCreate) {
+	if !b.enter() {
+		b.ephemeral(e.CreateMessage, textRestarting)
+		return
+	}
+	defer b.handlers.Done()
 	fromEdit := e.Data.CustomID == idAccessReform
 	if (e.Data.CustomID != idAccessForm && !fromEdit) || !b.inGuild(e.GuildID()) || e.Member() == nil {
 		return

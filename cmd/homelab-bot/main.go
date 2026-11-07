@@ -170,10 +170,18 @@ func run() error {
 	case <-ctx.Done():
 	}
 	log.Info("shutting down")
-	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Let work in progress finish: first Seerr webhooks, then Discord
+	// clicks such as a Replace, before Discord and the database close.
+	// docker-compose.yml gives the container long enough for both.
+	shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutCtx); err != nil {
 		return fmt.Errorf("shut down listener: %w", err)
+	}
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancelDrain()
+	if err := bot.Drain(drainCtx); err != nil {
+		log.Warn("shutting down anyway", "err", err)
 	}
 	return <-errc
 }

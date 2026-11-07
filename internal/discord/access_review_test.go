@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -95,5 +96,24 @@ func TestDraftStore(t *testing.T) {
 	s.now = func() time.Time { return now.Add(pendingTTL + time.Second) }
 	if _, ok := s.get(tok, member); ok {
 		t.Error("expired draft still there")
+	}
+}
+
+func TestDrain(t *testing.T) {
+	b := &Bot{}
+	if !b.enter() {
+		t.Fatal("enter refused before shutdown")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := b.Drain(ctx); err == nil {
+		t.Error("Drain returned while a handler was running")
+	}
+	if b.enter() {
+		t.Error("enter accepted a handler after shutdown began")
+	}
+	b.handlers.Done()
+	if err := b.Drain(context.Background()); err != nil {
+		t.Errorf("Drain after the handler finished: %v", err)
 	}
 }

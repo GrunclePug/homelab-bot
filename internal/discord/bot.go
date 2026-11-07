@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
@@ -49,6 +50,48 @@ type Bot struct {
 	drafts  *draftStore
 	pending *pendingStore
 	log     *slog.Logger
+
+	// Running interaction handlers, so shutdown can let them finish:
+	// disgo runs each in its own goroutine and doesn't wait for them.
+	mu       sync.Mutex
+	closing  bool
+	handlers sync.WaitGroup
+}
+
+// textRestarting answers a click that comes in while the bot shuts down.
+const textRestarting = "The bot is restarting. Try again in a minute."
+
+// enter registers a handler that is starting. It returns false once
+// shutdown has begun, and the handler should only answer textRestarting.
+// A handler that entered calls b.handlers.Done when it returns.
+func (b *Bot) enter() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closing {
+		return false
+	}
+	b.handlers.Add(1)
+	return true
+}
+
+// Drain stops taking new interactions and waits until the running ones
+// have finished, or ctx ends. Call it before Close.
+func (b *Bot) Drain(ctx context.Context) error {
+	b.mu.Lock()
+	b.closing = true
+	b.mu.Unlock()
+	done := make(chan struct{})
+	// If ctx ends first this goroutine waits on; the process is exiting.
+	go func() {
+		b.handlers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("interaction handlers still running: %w", ctx.Err())
+	}
 }
 
 // New builds the bot. It doesn't connect until Start.
@@ -170,6 +213,11 @@ func hasRole(m *discord.ResolvedMember, roles ...snowflake.ID) bool {
 }
 
 func (b *Bot) onCommand(e *events.ApplicationCommandInteractionCreate) {
+	if !b.enter() {
+		b.ephemeral(e.CreateMessage, textRestarting)
+		return
+	}
+	defer b.handlers.Done()
 	if !b.inGuild(e.GuildID()) {
 		b.ephemeral(e.CreateMessage, "This bot only works in its own server.")
 		return
