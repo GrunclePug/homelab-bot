@@ -21,6 +21,7 @@ func TestBuild(t *testing.T) {
 		{Name: "meta", State: "metaDL", ETA: 8640000},
 		{Name: "stuck", State: "stalledDL", Progress: 0.25, Size: 700 << 20},
 		{Name: "second in line", State: "queuedDL", Size: 3 << 30, Priority: 2},
+		{Name: "magnet", State: "queuedDL", Priority: 3},
 		{Name: "first in line", State: "queuedDL", Size: 4 << 30, Priority: 1},
 		{Name: "stopped", State: "stoppedDL", Progress: 0.1},
 		{Name: "broken", State: "missingFiles", Progress: 0.3},
@@ -33,7 +34,7 @@ func TestBuild(t *testing.T) {
 		"**slow**",
 		"50% of 2.0 GiB · 1.0 MiB/s · ETA 2h 0m",
 		"**meta**",
-		"0% of 0 B · 0 B/s · ETA unknown",
+		"0%, size not known yet · 0 B/s · ETA unknown",
 		"",
 		"__**Stalled**__",
 		"**stuck**",
@@ -44,6 +45,8 @@ func TestBuild(t *testing.T) {
 		"4.0 GiB",
 		"**second in line**",
 		"3.0 GiB",
+		"**magnet**",
+		"size not known yet",
 		"",
 		"__**Other**__",
 		"**stopped**",
@@ -54,7 +57,7 @@ func TestBuild(t *testing.T) {
 	if got := q.Text(); got != want {
 		t.Errorf("text:\n%s\n\nwant:\n%s", got, want)
 	}
-	if got, want := q.Footer(), "3 downloading · 1 stalled · 2 queued · 2 other"; got != want {
+	if got, want := q.Footer(), "3 downloading · 1 stalled · 3 queued · 2 other"; got != want {
 		t.Errorf("footer = %q, want %q", got, want)
 	}
 }

@@ -103,14 +103,14 @@ func Build(torrents []Torrent, maxRows int) Queue {
 		q.Sections = append(q.Sections, s)
 	}
 	add("Downloading", dl, func(t Torrent) string {
-		return fmt.Sprintf("**%s**\n%s of %s · %s/s · ETA %s",
-			name(t.Name), percent(t.Progress), Bytes(t.Size), Bytes(t.DLSpeed), ETA(t.ETA))
+		return fmt.Sprintf("**%s**\n%s · %s/s · ETA %s",
+			name(t.Name), progress(t), Bytes(t.DLSpeed), ETA(t.ETA))
 	})
 	add("Stalled", stalled, func(t Torrent) string {
-		return fmt.Sprintf("**%s**\n%s of %s", name(t.Name), percent(t.Progress), Bytes(t.Size))
+		return fmt.Sprintf("**%s**\n%s", name(t.Name), progress(t))
 	})
 	add("Queued", queued, func(t Torrent) string {
-		return fmt.Sprintf("**%s**\n%s", name(t.Name), Bytes(t.Size))
+		return fmt.Sprintf("**%s**\n%s", name(t.Name), size(t.Size))
 	})
 	add("Other", other, func(t Torrent) string {
 		return fmt.Sprintf("**%s**\n%s", name(t.Name), stateName(t.State))
@@ -168,9 +168,23 @@ func queueKey(t Torrent) int {
 	return t.Priority
 }
 
-func percent(p float64) string {
+// progress shows how far a torrent is, for example "45% of 2.0 GiB".
+func progress(t Torrent) string {
 	// Floor, so an unfinished torrent never shows 100%.
-	return fmt.Sprintf("%d%%", int(p*100))
+	pct := fmt.Sprintf("%d%%", int(t.Progress*100))
+	if t.Size <= 0 {
+		return pct + ", size not known yet"
+	}
+	return pct + " of " + Bytes(t.Size)
+}
+
+// size shows a torrent's size. A magnet link has none until qBittorrent
+// has fetched its metadata.
+func size(n int64) string {
+	if n <= 0 {
+		return "size not known yet"
+	}
+	return Bytes(n)
 }
 
 // Bytes formats a byte count in binary units, as qBittorrent shows them.
