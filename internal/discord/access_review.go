@@ -71,15 +71,17 @@ func (s *draftStore) get(token string, userID snowflake.ID) (draft, bool) {
 	return d, true
 }
 
-// take removes and returns the member's draft, so it is sent only once.
+// take removes and returns the member's draft, so it is sent only once,
+// even if they click twice.
 func (s *draftStore) take(token string, userID snowflake.ID) (draft, bool) {
-	d, ok := s.get(token, userID)
-	if ok {
-		s.mu.Lock()
-		delete(s.drafts, token)
-		s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.drafts[token]
+	if !ok || d.UserID != userID || s.now().After(d.expires) {
+		return draft{}, false
 	}
-	return d, ok
+	delete(s.drafts, token)
+	return d, true
 }
 
 var emailPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s.]{2,}$`)

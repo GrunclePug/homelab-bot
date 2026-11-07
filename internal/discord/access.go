@@ -28,6 +28,10 @@ const (
 	inputNote = "note"
 )
 
+// finishTimeout bounds the steps that close a request, which run on their
+// own context so a request is never left half-handled.
+const finishTimeout = 30 * time.Second
+
 const (
 	colorApproved = 0x2ECC71
 	colorPending  = 0xF1C40F
@@ -36,6 +40,7 @@ const (
 // accessREST is the part of disgo's REST client the access flow uses.
 type accessREST interface {
 	messenger
+	DeleteMessage(channelID, messageID snowflake.ID, opts ...rest.RequestOpt) error
 	AddMemberRole(guildID, userID, roleID snowflake.ID, opts ...rest.RequestOpt) error
 	CreateDMChannel(userID snowflake.ID, opts ...rest.RequestOpt) (*discord.DMChannel, error)
 }
@@ -50,7 +55,9 @@ type accessStore interface {
 	SetRequestPost(ctx context.Context, id int, channelID, messageID string) error
 	OpenRequest(ctx context.Context, userID string) (bool, error)
 	Request(ctx context.Context, id int) (store.AccessRequest, bool, error)
-	Claim(ctx context.Context, id int, from, to string) (bool, error)
+	Processing(ctx context.Context) ([]store.AccessRequest, error)
+	Claim(ctx context.Context, id int, from, to, by string) (bool, error)
+	MarkInvited(ctx context.Context, id int) error
 	Decide(ctx context.Context, id int, status, decidedBy, plex string) error
 }
 
@@ -141,14 +148,20 @@ func (a *access) submit(ctx context.Context, userID snowflake.ID, userName, plex
 	m := discord.NewMessageCreate().
 		WithEmbeds(requestEmbed(r)).
 		AddActionRow(requestButtons(id)...)
+	// Undoing a half-made request must work even if ctx has run out, or
+	// the member would be left with an open request nobody can act on.
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+	defer cancel()
 	msg, err := a.rest.CreateMessage(a.channel, m, rest.WithCtx(ctx))
 	if err != nil {
-		// Without a post nobody can act on it, so drop it and let the
-		// member try again.
-		return "", errors.Join(fmt.Errorf("post access request %d: %w", id, err), a.store.DeleteRequest(ctx, id))
+		return "", errors.Join(fmt.Errorf("post access request %d: %w", id, err), a.store.DeleteRequest(cleanup, id))
 	}
 	if err := a.store.SetRequestPost(ctx, id, msg.ChannelID.String(), msg.ID.String()); err != nil {
-		return "", err
+		// A post the bot can't find again can't be updated, so take both
+		// back and let the member try again.
+		return "", errors.Join(err,
+			a.rest.DeleteMessage(msg.ChannelID, msg.ID, rest.WithCtx(cleanup)),
+			a.store.DeleteRequest(cleanup, id))
 	}
 	return textRequestSent, nil
 }
@@ -158,20 +171,36 @@ func (a *access) submit(ctx context.Context, userID snowflake.ID, userName, plex
 // the member is asked to check their Plex account and request again. It
 // returns the text to show the approver.
 func (a *access) approve(ctx context.Context, id int, approver string) (string, error) {
-	r, err := a.claim(ctx, id)
+	r, err := a.claim(ctx, id, approver)
 	if err != nil || r == nil {
 		return textHandled, err
 	}
+	// However ctx ends, the request mustn't be left in processing, so the
+	// steps after the invite get their own time.
+	fin, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+	defer cancel()
 	userID, err := snowflake.Parse(r.UserID)
 	if err != nil {
-		return "", errors.Join(fmt.Errorf("access request %d: bad user ID: %w", id, err), a.release(ctx, id))
+		return "", errors.Join(fmt.Errorf("access request %d: bad user ID: %w", id, err), a.release(fin, id))
 	}
 
 	if err := a.plex.Invite(ctx, r.Plex); err != nil {
 		a.log.Warn("plex invite failed", "request", id, "err", err)
-		return a.inviteFailed(ctx, *r, userID, approver, err)
+		return a.inviteFailed(fin, *r, userID, approver, err)
 	}
+	if err := a.store.MarkInvited(fin, id); err != nil {
+		// Carry on: the member is invited. Only a restart before the end
+		// would now reopen the request instead of finishing it.
+		a.log.Error("record plex invite", "request", id, "err", err)
+	}
+	return a.onboard(fin, *r, userID, approver, "")
+}
 
+// onboard finishes an approval once the Plex invite has gone out: media
+// role, welcome DM, then the request is closed as approved. note, if set,
+// is added to the list of steps on the post.
+func (a *access) onboard(ctx context.Context, r store.AccessRequest, userID snowflake.ID, approver, note string) (string, error) {
+	id := r.ID
 	steps := []string{"Plex invite sent to " + code(maskAccount(r.Plex))}
 	if err := a.rest.AddMemberRole(a.guild, userID, a.mediaRole, rest.WithCtx(ctx), rest.WithReason("Access request approved by "+approver)); err != nil {
 		a.log.Warn("add media role failed", "request", id, "err", err)
@@ -185,12 +214,15 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 	} else {
 		steps = append(steps, "Welcome DM sent")
 	}
+	if note != "" {
+		steps = append(steps, note)
+	}
 
 	if err := a.store.Decide(ctx, id, store.StatusApproved, approver, maskAccount(r.Plex)); err != nil {
 		return "", err
 	}
 	body := strings.Join(steps, "\n")
-	err = a.updatePost(ctx, *r, func(e discord.Embed) discord.Embed {
+	err := a.updatePost(ctx, r, func(e discord.Embed) discord.Embed {
 		e.Color = colorApproved
 		e = setField(e, fieldStatus, "Approved by "+approver, true)
 		return setField(e, "Onboarding", body, false)
@@ -220,10 +252,12 @@ func (a *access) inviteFailed(ctx context.Context, r store.AccessRequest, userID
 // deny closes the request and tells the member. It returns the text to
 // show the approver.
 func (a *access) deny(ctx context.Context, id int, approver string) (string, error) {
-	r, err := a.claim(ctx, id)
+	r, err := a.claim(ctx, id, approver)
 	if err != nil || r == nil {
 		return textHandled, err
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+	defer cancel()
 	if err := a.store.Decide(ctx, id, store.StatusDenied, approver, maskAccount(r.Plex)); err != nil {
 		return "", err
 	}
@@ -244,8 +278,8 @@ func (a *access) deny(ctx context.Context, id int, approver string) (string, err
 // claim marks a pending request as being acted on. It returns nil if the
 // request isn't pending, for example because another approver got there
 // first.
-func (a *access) claim(ctx context.Context, id int) (*store.AccessRequest, error) {
-	ok, err := a.store.Claim(ctx, id, store.StatusPending, store.StatusProcessing)
+func (a *access) claim(ctx context.Context, id int, approver string) (*store.AccessRequest, error) {
+	ok, err := a.store.Claim(ctx, id, store.StatusPending, store.StatusProcessing, approver)
 	if err != nil || !ok {
 		return nil, err
 	}
@@ -261,8 +295,44 @@ func (a *access) claim(ctx context.Context, id int) (*store.AccessRequest, error
 
 // release puts a claimed request back to pending.
 func (a *access) release(ctx context.Context, id int) error {
-	_, err := a.store.Claim(ctx, id, store.StatusProcessing, store.StatusPending)
+	_, err := a.store.Claim(ctx, id, store.StatusProcessing, store.StatusPending, "")
 	return err
+}
+
+// textInterrupted is noted on a request the bot stopped handling halfway.
+const textInterrupted = "The bot restarted before this was handled, so nothing was done. Press Approve or Deny again."
+
+// recoverInterrupted settles the requests left in processing when the bot
+// stopped halfway through a click. One whose Plex invite went out is
+// onboarded; any other goes back to pending for the approver to try again.
+func (a *access) recoverInterrupted(ctx context.Context) error {
+	rs, err := a.store.Processing(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, r := range rs {
+		if !r.InvitedAt.IsZero() {
+			userID, err := snowflake.Parse(r.UserID)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("access request %d: bad user ID: %w", r.ID, err))
+				continue
+			}
+			a.log.Info("finishing access request interrupted after its invite", "request", r.ID)
+			_, err = a.onboard(ctx, r, userID, orDefault(r.DecidedBy, "an approver"), "Finished after the bot restarted")
+			errs = append(errs, err)
+			continue
+		}
+		a.log.Info("reopening access request interrupted before its invite", "request", r.ID)
+		if err := a.release(ctx, r.ID); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		errs = append(errs, a.updatePost(ctx, r, func(e discord.Embed) discord.Embed {
+			return setField(e, "Note", textInterrupted, false)
+		}, true))
+	}
+	return errors.Join(errs...)
 }
 
 func (a *access) dm(ctx context.Context, userID snowflake.ID, text string) error {

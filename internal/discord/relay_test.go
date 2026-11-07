@@ -30,6 +30,7 @@ type fakeDiscord struct {
 	next    snowflake.ID
 	msgs    map[snowflake.ID]*discord.Message
 	created []snowflake.ID // in order
+	deleted []snowflake.ID
 	fail    error
 }
 
@@ -77,6 +78,15 @@ func (f *fakeDiscord) UpdateMessage(ch, id snowflake.ID, mu discord.MessageUpdat
 		m.Components = *mu.Components
 	}
 	return m, nil
+}
+
+func (f *fakeDiscord) DeleteMessage(ch, id snowflake.ID, _ ...rest.RequestOpt) error {
+	if m, ok := f.msgs[id]; !ok || m.ChannelID != ch {
+		return errors.New("unknown message")
+	}
+	delete(f.msgs, id)
+	f.deleted = append(f.deleted, id)
+	return nil
 }
 
 func (f *fakeDiscord) last() *discord.Message {

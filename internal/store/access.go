@@ -31,9 +31,10 @@ type AccessRequest struct {
 	Status    string
 	ChannelID string
 	MessageID string
-	DecidedBy string
+	DecidedBy string // the approver, set when they claim the request
 	CreatedAt time.Time
 	DecidedAt time.Time
+	InvitedAt time.Time // zero until the Plex invite has gone out
 }
 
 // CreateRequest records a new pending request and returns its ID. It
@@ -89,37 +90,88 @@ func (s *Store) OpenRequest(ctx context.Context, userID string) (bool, error) {
 	return n > 0, nil
 }
 
+const requestColumns = `id, user_id, user_name, plex, note, status, channel_id, message_id,
+	decided_by, created_at, decided_at, invited_at`
+
+type scanner interface{ Scan(dest ...any) error }
+
+func scanRequest(row scanner) (AccessRequest, error) {
+	var (
+		r                         AccessRequest
+		created, decided, invited string
+	)
+	err := row.Scan(&r.ID, &r.UserID, &r.UserName, &r.Plex, &r.Note, &r.Status, &r.ChannelID, &r.MessageID,
+		&r.DecidedBy, &created, &decided, &invited)
+	if err != nil {
+		return AccessRequest{}, err
+	}
+	for _, t := range []struct {
+		dst *time.Time
+		s   string
+	}{{&r.CreatedAt, created}, {&r.DecidedAt, decided}, {&r.InvitedAt, invited}} {
+		if t.s == "" {
+			continue
+		}
+		if *t.dst, err = time.Parse(time.RFC3339, t.s); err != nil {
+			return AccessRequest{}, fmt.Errorf("parse time %q: %w", t.s, err)
+		}
+	}
+	return r, nil
+}
+
 // Request returns a request. ok is false if there is none.
-func (s *Store) Request(ctx context.Context, id int) (r AccessRequest, ok bool, err error) {
-	var created, decided string
-	err = s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, user_name, plex, note, status, channel_id, message_id, decided_by, created_at, decided_at
-		 FROM access_request WHERE id = ?`, id).
-		Scan(&r.ID, &r.UserID, &r.UserName, &r.Plex, &r.Note, &r.Status, &r.ChannelID, &r.MessageID,
-			&r.DecidedBy, &created, &decided)
+func (s *Store) Request(ctx context.Context, id int) (AccessRequest, bool, error) {
+	r, err := scanRequest(s.db.QueryRowContext(ctx,
+		"SELECT "+requestColumns+" FROM access_request WHERE id = ?", id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return AccessRequest{}, false, nil
 	}
 	if err != nil {
 		return AccessRequest{}, false, fmt.Errorf("get access request %d: %w", id, err)
 	}
-	if r.CreatedAt, err = time.Parse(time.RFC3339, created); err != nil {
-		return AccessRequest{}, false, fmt.Errorf("get access request %d: parse created_at: %w", id, err)
-	}
-	if decided != "" {
-		if r.DecidedAt, err = time.Parse(time.RFC3339, decided); err != nil {
-			return AccessRequest{}, false, fmt.Errorf("get access request %d: parse decided_at: %w", id, err)
-		}
-	}
 	return r, true, nil
 }
 
-// Claim moves a request from one status to another, and reports whether
-// it was in the from status. Approvers claim a pending request before
-// acting on it, so two clicks can't both act.
-func (s *Store) Claim(ctx context.Context, id int, from, to string) (bool, error) {
+// Processing lists the requests an approver's click was acting on, for
+// example when the bot stopped halfway through.
+func (s *Store) Processing(ctx context.Context) ([]AccessRequest, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT "+requestColumns+" FROM access_request WHERE status = ? ORDER BY id", StatusProcessing)
+	if err != nil {
+		return nil, fmt.Errorf("list processing access requests: %w", err)
+	}
+	defer rows.Close()
+	var out []AccessRequest
+	for rows.Next() {
+		r, err := scanRequest(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list processing access requests: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list processing access requests: %w", err)
+	}
+	return out, nil
+}
+
+// MarkInvited records that the Plex invite for a request went out.
+func (s *Store) MarkInvited(ctx context.Context, id int) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE access_request SET invited_at = ? WHERE id = ?",
+		time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return fmt.Errorf("mark access request %d invited: %w", id, err)
+	}
+	return nil
+}
+
+// Claim moves a request from one status to another, recording by as the
+// approver acting on it, and reports whether it was in the from status.
+// Approvers claim a pending request before acting on it, so two clicks
+// can't both act.
+func (s *Store) Claim(ctx context.Context, id int, from, to, by string) (bool, error) {
 	res, err := s.db.ExecContext(ctx,
-		"UPDATE access_request SET status = ? WHERE id = ? AND status = ?", to, id, from)
+		"UPDATE access_request SET status = ?, decided_by = ? WHERE id = ? AND status = ?", to, by, id, from)
 	if err != nil {
 		return false, fmt.Errorf("claim access request %d: %w", id, err)
 	}

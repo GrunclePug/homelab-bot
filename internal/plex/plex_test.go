@@ -73,3 +73,25 @@ func TestInvite(t *testing.T) {
 		t.Error("unknown server: want error")
 	}
 }
+
+func TestInviteRedactsAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			io.WriteString(w, serverXML)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `<errors><error code="1000" message="No user Friend@Example.com, or friend@example.com"/></errors>`)
+	}))
+	defer srv.Close()
+	err := NewClient(srv.URL, "tok", "abc123").Invite(context.Background(), "friend@example.com")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "friend@example.com") {
+		t.Errorf("error names the account: %v", err)
+	}
+	if !strings.Contains(err.Error(), "No user the invited account, or the invited account") {
+		t.Errorf("error = %v", err)
+	}
+}

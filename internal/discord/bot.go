@@ -123,6 +123,10 @@ func (b *Bot) Start(ctx context.Context) error {
 	if err := b.client.OpenGateway(ctx); err != nil {
 		return fmt.Errorf("open gateway: %w", err)
 	}
+	// Not fatal: the requests stay as they are and can be fixed by hand.
+	if err := b.access.recoverInterrupted(ctx); err != nil {
+		b.log.Error("recover interrupted access requests", "err", err)
+	}
 	return nil
 }
 

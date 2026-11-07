@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"time"
 )
@@ -103,10 +104,19 @@ func (c *Client) Invite(ctx context.Context, who string) error {
 		},
 	}
 	if _, err := c.do(ctx, http.MethodPost, "/api/servers/"+url.PathEscape(c.serverID)+"/shared_servers", req); err != nil {
-		// The error leaves out who, which may be an email address.
-		return fmt.Errorf("plex: invite: %w", err)
+		// who may be an email address, and plex.tv's message might repeat
+		// it, so it's taken out of the error, which ends up in Discord.
+		return fmt.Errorf("plex: invite: %s", redact(err.Error(), who))
 	}
 	return nil
+}
+
+// redact replaces every case-insensitive occurrence of who in s.
+func redact(s, who string) string {
+	if who == "" {
+		return s
+	}
+	return regexp.MustCompile("(?i)"+regexp.QuoteMeta(who)).ReplaceAllLiteralString(s, "the invited account")
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in any) ([]byte, error) {

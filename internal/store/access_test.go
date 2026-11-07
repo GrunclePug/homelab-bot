@@ -30,13 +30,23 @@ func TestAccessRequests(t *testing.T) {
 	}
 
 	// Only one of two clicks gets the request.
-	first, err1 := s.Claim(ctx, id, StatusPending, StatusProcessing)
-	second, err2 := s.Claim(ctx, id, StatusPending, StatusProcessing)
+	first, err1 := s.Claim(ctx, id, StatusPending, StatusProcessing, "bob")
+	second, err2 := s.Claim(ctx, id, StatusPending, StatusProcessing, "cy")
 	if err := errors.Join(err1, err2); err != nil || !first || second {
 		t.Fatalf("claims = %v, %v (%v)", first, second, err)
 	}
 	if _, err := s.CreateRequest(ctx, AccessRequest{UserID: "1", Plex: "x"}); !errors.Is(err, ErrOpenRequest) {
 		t.Error("a processing request should still count as open")
+	}
+	ps, err := s.Processing(ctx)
+	if err != nil || len(ps) != 1 || ps[0].ID != id || ps[0].DecidedBy != "bob" || !ps[0].InvitedAt.IsZero() {
+		t.Fatalf("Processing = %+v, %v", ps, err)
+	}
+	if err := s.MarkInvited(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := s.Request(ctx, id); r.InvitedAt.IsZero() {
+		t.Error("InvitedAt not set")
 	}
 
 	if err := s.Decide(ctx, id, StatusDenied, "bob", "a•••@e•••.com"); err != nil {

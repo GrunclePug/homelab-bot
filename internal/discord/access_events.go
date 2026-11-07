@@ -4,11 +4,23 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/rest"
 )
+
+// decisionTimeout bounds an Approve or Deny click.
+const decisionTimeout = 2 * time.Minute
+
+// answer edits an interaction's deferred reply on a fresh context, so a
+// slow step before it can't stop the member or approver being told.
+func (b *Bot) answer(token, text string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	b.respondText(ctx, token, text)
+}
 
 // accessPanel posts the request panel in the channel the command was run in.
 func (b *Bot) accessPanel(e *events.ApplicationCommandInteractionCreate) {
@@ -77,7 +89,7 @@ func (b *Bot) accessComponent(e *events.ComponentInteractionCreate, id string) {
 			b.log.Error("submit access request", "err", err)
 			text = "Couldn't send your request right now. Please try again later."
 		}
-		b.respondText(ctx, e.Token(), text)
+		b.answer(e.Token(), text)
 		return
 	}
 
@@ -107,12 +119,16 @@ func (b *Bot) accessComponent(e *events.ComponentInteractionCreate, id string) {
 		b.log.Error("defer access decision", "err", err)
 		return
 	}
-	text, err := run(ctx, reqID, e.Member().EffectiveName())
+	// A Plex invite alone may take 40 seconds; the deferred reply can be
+	// edited for 15 minutes.
+	dctx, dcancel := context.WithTimeout(context.Background(), decisionTimeout)
+	defer dcancel()
+	text, err := run(dctx, reqID, e.Member().EffectiveName())
 	if err != nil {
 		b.log.Error("access decision", "request", reqID, "err", err)
 		text = strings.TrimSpace(text + "\nSomething went wrong: " + err.Error())
 	}
-	b.respondText(ctx, e.Token(), text)
+	b.answer(e.Token(), text)
 }
 
 // onModal handles the access request form.
