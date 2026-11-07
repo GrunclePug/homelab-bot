@@ -3,12 +3,14 @@
 // plex.tv's sharing API isn't documented. This follows what python-plexapi
 // does: inviteFriend lists the server's library sections and shares all of
 // them with the invited account; updateFriend with removeSections deletes
-// the server's share by its ID.
+// an accepted share by its ID, and cancelInvite cancels a pending invite.
 package plex
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -17,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,56 +61,115 @@ func NewClient(baseURL, token, serverID string) *Client {
 
 // Sections lists the server's libraries.
 func (c *Client) Sections(ctx context.Context) ([]Section, error) {
+	srv, err := c.server(ctx)
+	return srv.Sections, err
+}
+
+// serverInfo is the server as plex.tv knows it.
+type serverInfo struct {
+	MachineIdentifier string    `xml:"machineIdentifier,attr"`
+	Name              string    `xml:"name,attr"`
+	Sections          []Section `xml:"Section"`
+}
+
+func (c *Client) server(ctx context.Context) (serverInfo, error) {
 	var mc struct {
-		Servers []struct {
-			MachineIdentifier string    `xml:"machineIdentifier,attr"`
-			Sections          []Section `xml:"Section"`
-		} `xml:"Server"`
+		Servers []serverInfo `xml:"Server"`
 	}
 	body, err := c.do(ctx, http.MethodGet, "/api/servers/"+url.PathEscape(c.serverID), nil)
 	if err != nil {
-		return nil, fmt.Errorf("plex: list libraries: %w", err)
+		return serverInfo{}, fmt.Errorf("plex: get server: %w", err)
 	}
 	if err := xml.Unmarshal(body, &mc); err != nil {
-		return nil, fmt.Errorf("plex: list libraries: decode: %w", err)
+		return serverInfo{}, fmt.Errorf("plex: get server: decode: %w", err)
 	}
 	if len(mc.Servers) == 0 {
-		return nil, fmt.Errorf("plex: server %s not found on this account", c.serverID)
+		return serverInfo{}, fmt.Errorf("plex: server %s not found on this account", c.serverID)
 	}
-	return mc.Servers[0].Sections, nil
+	return mc.Servers[0], nil
 }
 
-// ErrShareUnknown means an invite went out but its share ID couldn't be
-// found, so the share can only be removed by hand.
-var ErrShareUnknown = errors.New("plex: invite sent, but its share ID is unknown")
+// ErrAccountUnknown means the account was invited, or already had access,
+// but couldn't be found among the shares and invites, so its access can
+// only be removed by hand.
+var ErrAccountUnknown = errors.New("plex: the invited account couldn't be found")
+
+// Account identifies who a share or invite is for, so RemoveAccess can
+// find it later: "id:" and the Plex account ID, or, for an invite to an
+// email address with no Plex account yet, "email:" and the SHA-256 of the
+// lowercased address. It never holds the address itself.
+type Account string
+
+func accountID(id int) Account { return Account("id:" + strconv.Itoa(id)) }
+
+func accountEmail(email string) Account { return Account("email:" + hashEmail(email)) }
+
+func hashEmail(s string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(s))))
+	return hex.EncodeToString(sum[:])
+}
+
+// matches reports whether the account is the one with this Plex ID or
+// email address; either may be empty.
+func (a Account) matches(id, email string) bool {
+	kind, v, _ := strings.Cut(string(a), ":")
+	switch kind {
+	case "id":
+		return id != "" && id == v
+	case "email":
+		return email != "" && hashEmail(email) == v
+	}
+	return false
+}
 
 // ErrAlreadyShared means the server was already shared with the account,
-// so no invite was sent. Invite then returns the existing share's ID.
+// as an accepted share or a pending invite, so no invite was sent.
 var ErrAlreadyShared = errors.New("plex: the server is already shared with this account")
 
-// sharedServer is one account's share of the server, as plex.tv lists it.
+// sharedServer is an accepted share of the server, as
+// /api/servers/{machineId}/shared_servers lists it.
 type sharedServer struct {
 	ID       int    `xml:"id,attr"`
+	UserID   int    `xml:"userID,attr"`
 	Email    string `xml:"email,attr"`
 	Username string `xml:"username,attr"`
 }
 
+// invite is an invite the owner sent that hasn't been accepted, as
+// /api/invites/requested lists it. Its ID is the invitee's Plex account ID,
+// or, for an address with no Plex account, the address itself.
+type invite struct {
+	ID       string         `xml:"id,attr"`
+	Email    string         `xml:"email,attr"`
+	Username string         `xml:"username,attr"`
+	Friend   string         `xml:"friend,attr"`
+	Home     string         `xml:"home,attr"`
+	Server   string         `xml:"server,attr"`
+	Servers  []inviteServer `xml:"Server"`
+}
+
+type inviteServer struct {
+	Name string `xml:"name,attr"`
+}
+
 // Invite shares every library with a Plex account, given as its email
-// address or username, and returns the ID of the share it created.
-// plex.tv sends the invitation. If the invite went out but the share's ID
-// can't be found, it returns an error wrapping ErrShareUnknown. If the
-// account already has a share, it returns that share's ID and an error
-// wrapping ErrAlreadyShared, and also ErrShareUnknown if it can't be found.
-func (c *Client) Invite(ctx context.Context, who string) (int, error) {
-	secs, err := c.Sections(ctx)
+// address or username, and returns the Account that RemoveAccess takes.
+// plex.tv sends the invitation.
+//
+// If the account already has access, accepted or still pending, no invite
+// is sent and the error wraps ErrAlreadyShared. If the account can't be
+// found, the Account is empty and the error wraps ErrAccountUnknown.
+// Either way the account has access.
+func (c *Client) Invite(ctx context.Context, who string) (Account, error) {
+	srv, err := c.server(ctx)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	if len(secs) == 0 {
-		return 0, fmt.Errorf("plex: server %s has no libraries to share", c.serverID)
+	if len(srv.Sections) == 0 {
+		return "", fmt.Errorf("plex: server %s has no libraries to share", c.serverID)
 	}
-	ids := make([]int, len(secs))
-	for i, s := range secs {
+	ids := make([]int, len(srv.Sections))
+	for i, s := range srv.Sections {
 		ids[i] = s.ID
 	}
 	req := map[string]any{
@@ -125,98 +187,152 @@ func (c *Client) Invite(ctx context.Context, who string) (int, error) {
 			"filterMusic":       "",
 		},
 	}
-	body, err := c.do(ctx, http.MethodPost, c.sharesPath(), req)
+	var already error
+	_, err = c.do(ctx, http.MethodPost, c.sharesPath(), req)
 	var se *statusError
-	if errors.As(err, &se) && se.code == http.StatusBadRequest && strings.Contains(strings.ToLower(se.text), "already sharing") {
-		id, ferr := c.findShare(ctx, who)
-		if ferr != nil || id == 0 {
-			return 0, errors.Join(ErrAlreadyShared, ErrShareUnknown)
-		}
-		return id, ErrAlreadyShared
-	}
-	if errors.As(err, &se) {
+	switch {
+	case errors.As(err, &se) && se.code == http.StatusBadRequest && strings.Contains(strings.ToLower(se.text), "already sharing"):
+		already = ErrAlreadyShared
+	case errors.As(err, &se):
 		// The path names the server; plex.tv's own words are enough.
-		err = errors.New(se.status + ": " + se.text)
-	}
-	if err != nil {
 		// who may be an email address, and plex.tv's message might repeat
 		// it, so it's taken out of the error, which ends up in Discord.
-		return 0, fmt.Errorf("plex: invite: %s", redact(err.Error(), who))
+		return "", fmt.Errorf("plex: invite: %s", redact(se.status+": "+se.text, who))
+	case err != nil:
+		return "", fmt.Errorf("plex: invite: %s", redact(err.Error(), who))
 	}
-	if id := createdShare(body); id > 0 {
-		return id, nil
-	}
-	id, err := c.findShare(ctx, who)
+	acct, err := c.findAccount(ctx, who, srv.Name)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %s", ErrShareUnknown, redact(err.Error(), who))
+		return "", errors.Join(already, fmt.Errorf("%w: %s", ErrAccountUnknown, redact(err.Error(), who)))
 	}
-	if id == 0 {
-		return 0, ErrShareUnknown
+	if acct == "" {
+		return "", errors.Join(already, ErrAccountUnknown)
 	}
-	return id, nil
+	return acct, already
 }
 
 func (c *Client) sharesPath() string {
 	return "/api/servers/" + url.PathEscape(c.serverID) + "/shared_servers"
 }
 
-// createdShare reads the share ID from plex.tv's answer to an invite,
-// which is a SharedServer element, on its own or in a MediaContainer.
-func createdShare(body []byte) int {
-	var one struct {
-		XMLName xml.Name
-		ID      int            `xml:"id,attr"`
-		Shares  []sharedServer `xml:"SharedServer"`
+// findAccount looks up who, by email address or username, among the
+// server's accepted shares and then the pending invites to the server
+// named serverName. It returns "" if they are in neither.
+func (c *Client) findAccount(ctx context.Context, who, serverName string) (Account, error) {
+	shares, err := c.shares(ctx)
+	if err != nil {
+		return "", err
 	}
-	if xml.Unmarshal(body, &one) != nil {
-		return 0
+	for _, s := range shares {
+		if s.UserID > 0 && (strings.EqualFold(s.Email, who) || strings.EqualFold(s.Username, who)) {
+			return accountID(s.UserID), nil
+		}
 	}
-	if one.XMLName.Local == "SharedServer" {
-		return one.ID
+	invites, err := c.invites(ctx, serverName)
+	if err != nil {
+		return "", err
 	}
-	if len(one.Shares) == 1 {
-		return one.Shares[0].ID
+	for _, inv := range invites {
+		if inv.ID == "" || !(strings.EqualFold(inv.Email, who) || strings.EqualFold(inv.Username, who) || strings.EqualFold(inv.ID, who)) {
+			continue
+		}
+		if n, err := strconv.Atoi(inv.ID); err == nil && n > 0 {
+			return accountID(n), nil
+		}
+		return accountEmail(inv.ID), nil
 	}
-	return 0
+	return "", nil
 }
 
-// findShare looks up the share of the account who, by email address or
-// username. It returns 0 if there is none.
-func (c *Client) findShare(ctx context.Context, who string) (int, error) {
+func (c *Client) shares(ctx context.Context) ([]sharedServer, error) {
 	body, err := c.do(ctx, http.MethodGet, c.sharesPath(), nil)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	var mc struct {
 		Shares []sharedServer `xml:"SharedServer"`
 	}
 	if err := xml.Unmarshal(body, &mc); err != nil {
-		return 0, fmt.Errorf("decode shares: %w", err)
+		return nil, fmt.Errorf("decode shares: %w", err)
 	}
-	for _, s := range mc.Shares {
-		if strings.EqualFold(s.Email, who) || strings.EqualFold(s.Username, who) {
-			return s.ID, nil
-		}
-	}
-	return 0, nil
+	return mc.Shares, nil
 }
 
-// RemoveShare stops sharing the server through the share with this ID,
-// whether or not its invite was accepted. A share that is already gone
-// is not an error.
-func (c *Client) RemoveShare(ctx context.Context, id int) error {
-	if id <= 0 {
-		return errors.New("plex: remove share: no share ID")
+// invites lists the pending invites that include the server named
+// serverName. plex.tv names an invite's servers but gives no IDs.
+func (c *Client) invites(ctx context.Context, serverName string) ([]invite, error) {
+	body, err := c.do(ctx, http.MethodGet, "/api/invites/requested", nil)
+	if err != nil {
+		return nil, err
 	}
-	_, err := c.do(ctx, http.MethodDelete, c.sharesPath()+"/"+strconv.Itoa(id), nil)
+	var mc struct {
+		Invites []invite `xml:"Invite"`
+	}
+	if err := xml.Unmarshal(body, &mc); err != nil {
+		return nil, fmt.Errorf("decode invites: %w", err)
+	}
+	var out []invite
+	for _, inv := range mc.Invites {
+		if inv.Server == "1" && slices.Contains(inv.Servers, inviteServer{Name: serverName}) {
+			out = append(out, inv)
+		}
+	}
+	return out, nil
+}
+
+// RemoveAccess stops sharing the server with acct: it deletes their share
+// if they accepted the invite, or cancels the invite if they haven't.
+// removed is false if they had neither.
+func (c *Client) RemoveAccess(ctx context.Context, acct Account) (removed bool, err error) {
+	if acct == "" {
+		return false, errors.New("plex: remove access: no account")
+	}
+	shares, err := c.shares(ctx)
+	if err != nil {
+		return false, fmt.Errorf("plex: remove access: %w", err)
+	}
+	for _, s := range shares {
+		// Someone invited by address and since signed up matches by it.
+		if acct.matches(strconv.Itoa(s.UserID), s.Email) {
+			return c.remove(ctx, c.sharesPath()+"/"+strconv.Itoa(s.ID))
+		}
+	}
+	srv, err := c.server(ctx)
+	if err != nil {
+		return false, err
+	}
+	invites, err := c.invites(ctx, srv.Name)
+	if err != nil {
+		return false, fmt.Errorf("plex: remove access: %w", err)
+	}
+	for _, inv := range invites {
+		if acct.matches(inv.ID, inv.Email) || acct.matches("", inv.ID) {
+			// As python-plexapi's cancelInvite: the invite's own flags.
+			q := url.Values{"friend": {orZero(inv.Friend)}, "home": {orZero(inv.Home)}, "server": {orZero(inv.Server)}}
+			return c.remove(ctx, "/api/invites/requested/"+url.PathEscape(inv.ID)+"?"+q.Encode())
+		}
+	}
+	return false, nil
+}
+
+func orZero(s string) string {
+	if s == "" {
+		return "0"
+	}
+	return s
+}
+
+// remove sends a DELETE; something already gone counts as not removed.
+func (c *Client) remove(ctx context.Context, path string) (bool, error) {
+	_, err := c.do(ctx, http.MethodDelete, path, nil)
 	var se *statusError
 	if errors.As(err, &se) && se.code == http.StatusNotFound {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("plex: remove share %d: %w", id, err)
+		return false, fmt.Errorf("plex: remove access: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // Server is how plex.tv last saw the server.

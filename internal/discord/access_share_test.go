@@ -47,8 +47,8 @@ func TestShareLifecycle(t *testing.T) {
 	ctx := context.Background()
 	a, fd, fp, st := newTestAccess(t)
 	approved(t, a, fd)
-	if r, _, _ := st.Request(ctx, 1); r.ShareID != 100 {
-		t.Fatalf("share ID = %d, want 100", r.ShareID)
+	if r, _, _ := st.Request(ctx, 1); r.PlexAccount != "id:100" {
+		t.Fatalf("plex account = %q, want id:100", r.PlexAccount)
 	}
 
 	// Role changes that keep the media role ask nothing.
@@ -109,7 +109,7 @@ func TestShareLifecycle(t *testing.T) {
 	if text, err := a.removeShare(ctx, 1, "Bob", *q); err != nil || text != "Plex access removed." {
 		t.Fatalf("remove = %q, %v", text, err)
 	}
-	if !slices.Equal(fp.removed, []int{100}) || shareState(t, st) != store.ShareRemoved ||
+	if !slices.Equal(fp.removed, []string{"/api/invites/requested/100"}) || shareState(t, st) != store.ShareRemoved ||
 		field(q.Embeds[0], fieldStatus) != "Plex access removed by Bob" || len(q.Components) != 0 {
 		t.Errorf("after remove: removed %v, state %q, status %q", fp.removed, shareState(t, st), field(q.Embeds[0], fieldStatus))
 	}
@@ -137,18 +137,18 @@ func TestShareUnknown(t *testing.T) {
 		t.Errorf("pending request: %v, %d questions", err, len(questions(fd)))
 	}
 
-	// plex.tv names no share and doesn't list one: still approved, with
-	// a note for the approver.
-	fp.noShareID = true
+	// plex.tv doesn't list the invite: still approved, with a note for
+	// the approver.
+	fp.unlisted = true
 	text, err := a.approve(ctx, 1, "Bob")
 	if err != nil || !strings.HasPrefix(text, "Approved.") || !strings.Contains(text, "remove their Plex access by hand") {
 		t.Fatalf("approve = %q, %v", text, err)
 	}
-	if r, _, _ := st.Request(ctx, 1); r.Status != store.StatusApproved || r.ShareID != 0 {
-		t.Errorf("status %q, share %d", r.Status, r.ShareID)
+	if r, _, _ := st.Request(ctx, 1); r.Status != store.StatusApproved || r.PlexAccount != "" {
+		t.Errorf("status %q, account %q", r.Status, r.PlexAccount)
 	}
 	if err := a.memberLeft(ctx, member); err != nil || len(questions(fd)) != 0 {
-		t.Errorf("unknown share: %v, %d questions", err, len(questions(fd)))
+		t.Errorf("unknown account: %v, %d questions", err, len(questions(fd)))
 	}
 
 	// As an approval from before shares were recorded looks.
@@ -199,37 +199,58 @@ func TestShareRecoverRemoving(t *testing.T) {
 	}
 }
 
-// A member whose account still has a share, for example one who lost the
-// media role and asked again, is onboarded and their share is tracked.
+// A member whose account still has access, for example one who lost the
+// media role and asked again, is onboarded and tracked, whether they had
+// accepted the first invite or not.
 func TestApproveAlreadyShared(t *testing.T) {
 	ctx := context.Background()
-	a, fd, fp, st := newTestAccess(t)
-	fp.shared = map[string]int{"ann@example.com": 90}
-	submitted(t, a, fd)
-	text, err := a.approve(ctx, 1, "Bob")
-	if err != nil || !strings.HasPrefix(text, "Approved.") || !strings.Contains(text, "already had Plex access, so no new invite was sent") ||
-		strings.Contains(text, "Plex invite sent") || strings.Contains(text, "by hand") {
-		t.Fatalf("approve = %q, %v", text, err)
+	for _, tc := range []struct {
+		name               string
+		pending, accepted  map[string]int
+		account, removedAt string
+	}{
+		{"pending", map[string]int{"ann@example.com": 90}, nil, "id:90", "/api/invites/requested/90"},
+		{"accepted", nil, map[string]int{"ann@example.com": 91}, "id:91", "/api/servers/srv/shared_servers/5091"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, fd, fp, st := newTestAccess(t)
+			fp.pending, fp.accepted = tc.pending, tc.accepted
+			submitted(t, a, fd)
+			text, err := a.approve(ctx, 1, "Bob")
+			if err != nil || !strings.HasPrefix(text, "Approved.") || !strings.Contains(text, "already had Plex access, so no new invite was sent") ||
+				strings.Contains(text, "Plex invite sent") || strings.Contains(text, "by hand") {
+				t.Fatalf("approve = %q, %v", text, err)
+			}
+			if r, _, _ := st.Request(ctx, 1); r.Status != store.StatusApproved || r.PlexAccount != tc.account {
+				t.Errorf("status %q, account %q", r.Status, r.PlexAccount)
+			}
+			if !slices.Equal(fd.roles[member], []snowflake.ID{mediaRole}) || len(fd.dms(member)) != 1 || !strings.Contains(fd.dms(member)[0], "You're in!") {
+				t.Errorf("roles %v, DMs %q", fd.roles[member], fd.dms(member))
+			}
+			if err := a.memberLeft(ctx, member); err != nil || len(questions(fd)) != 1 {
+				t.Fatalf("leave: %v, %d questions", err, len(questions(fd)))
+			}
+			if text, err := a.removeShare(ctx, 1, "Bob", *questions(fd)[0]); err != nil || text != "Plex access removed." ||
+				!slices.Equal(fp.removed, []string{tc.removedAt}) {
+				t.Errorf("remove = %q, %v; removed %v", text, err, fp.removed)
+			}
+		})
 	}
-	if r, _, _ := st.Request(ctx, 1); r.Status != store.StatusApproved || r.ShareID != 90 {
-		t.Errorf("status %q, share %d", r.Status, r.ShareID)
-	}
-	if !slices.Equal(fd.roles[member], []snowflake.ID{mediaRole}) || len(fd.dms(member)) != 1 || !strings.Contains(fd.dms(member)[0], "You're in!") {
-		t.Errorf("roles %v, DMs %q", fd.roles[member], fd.dms(member))
-	}
-	if err := a.memberLeft(ctx, member); err != nil || len(questions(fd)) != 1 {
-		t.Errorf("leave: %v, %d questions", err, len(questions(fd)))
-	}
+}
 
-	// Shared, but the share can't be found: still approved, with a note.
-	a2, fd2, fp2, st2 := newTestAccess(t)
-	fp2.shared = map[string]int{"ann@example.com": 0}
-	submitted(t, a2, fd2)
-	text, err = a2.approve(ctx, 1, "Bob")
-	if err != nil || !strings.Contains(text, "already had Plex access") || !strings.Contains(text, "remove their Plex access by hand") {
-		t.Errorf("approve, share unknown = %q, %v", text, err)
+// Access removed in Plex by hand before an approver pressed Remove access.
+func TestRemoveNothingLeft(t *testing.T) {
+	ctx := context.Background()
+	a, fd, fp, st := newTestAccess(t)
+	approved(t, a, fd)
+	if err := a.memberLeft(ctx, member); err != nil {
+		t.Fatal(err)
 	}
-	if r, _, _ := st2.Request(ctx, 1); r.Status != store.StatusApproved || r.ShareID != 0 {
-		t.Errorf("share unknown: status %q, share %d", r.Status, r.ShareID)
+	fp.pending = nil
+	q := questions(fd)[0]
+	text, err := a.removeShare(ctx, 1, "Bob", *q)
+	if err != nil || !strings.HasPrefix(text, "They no longer had Plex access") || len(fp.removed) != 0 ||
+		shareState(t, st) != store.ShareRemoved || !strings.HasPrefix(field(q.Embeds[0], fieldStatus), "Nothing to remove") {
+		t.Errorf("remove = %q, %v; removed %v, state %q, status %q", text, err, fp.removed, shareState(t, st), field(q.Embeds[0], fieldStatus))
 	}
 }

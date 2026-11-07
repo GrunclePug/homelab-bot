@@ -46,10 +46,10 @@ type accessREST interface {
 	CreateDMChannel(userID snowflake.ID, opts ...rest.RequestOpt) (*discord.DMChannel, error)
 }
 
-// plexSharer invites accounts to the Plex server and removes their share.
+// plexSharer invites accounts to the Plex server and removes their access.
 type plexSharer interface {
-	Invite(ctx context.Context, who string) (int, error)
-	RemoveShare(ctx context.Context, id int) error
+	Invite(ctx context.Context, who string) (plex.Account, error)
+	RemoveAccess(ctx context.Context, acct plex.Account) (bool, error)
 }
 
 type accessStore interface {
@@ -60,7 +60,7 @@ type accessStore interface {
 	Request(ctx context.Context, id int) (store.AccessRequest, bool, error)
 	Processing(ctx context.Context) ([]store.AccessRequest, error)
 	Claim(ctx context.Context, id int, from, to, by string) (bool, error)
-	MarkInvited(ctx context.Context, id, shareID int) error
+	MarkInvited(ctx context.Context, id int, plexAccount string) error
 	Decide(ctx context.Context, id int, status, decidedBy, plex string) error
 	Share(ctx context.Context, userID string) (store.AccessRequest, bool, error)
 	SetShareState(ctx context.Context, id int, to string, from ...string) (bool, error)
@@ -190,19 +190,19 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 		return "", errors.Join(fmt.Errorf("access request %d: bad user ID: %w", id, err), a.release(fin, id))
 	}
 
-	shareID, err := a.plex.Invite(ctx, r.Plex)
+	acct, err := a.plex.Invite(ctx, r.Plex)
 	// Neither is a failure: the account has access either way. A member
 	// can already have it after losing the media role and asking again.
-	already, unknown := errors.Is(err, plex.ErrAlreadyShared), errors.Is(err, plex.ErrShareUnknown)
+	already, unknown := errors.Is(err, plex.ErrAlreadyShared), errors.Is(err, plex.ErrAccountUnknown)
 	if already || unknown {
-		a.log.Info("plex invite", "request", id, "already_shared", already, "share_unknown", unknown, "err", err)
+		a.log.Info("plex invite", "request", id, "already_shared", already, "account_unknown", unknown, "err", err)
 		err = nil
 	}
 	if err != nil {
 		a.log.Warn("plex invite failed", "request", id, "err", err)
 		return a.inviteFailed(fin, *r, userID, approver, err)
 	}
-	if err := a.store.MarkInvited(fin, id, shareID); err != nil {
+	if err := a.store.MarkInvited(fin, id, string(acct)); err != nil {
 		// Carry on: the member is invited. Only a restart before the end
 		// would now reopen the request instead of finishing it.
 		a.log.Error("record plex invite", "request", id, "err", err)

@@ -44,11 +44,11 @@ func TestAccessRequests(t *testing.T) {
 	if err != nil || len(ps) != 1 || ps[0].ID != id || ps[0].DecidedBy != "bob" || !ps[0].InvitedAt.IsZero() {
 		t.Fatalf("Processing = %+v, %v", ps, err)
 	}
-	if err := s.MarkInvited(ctx, id, 77); err != nil {
+	if err := s.MarkInvited(ctx, id, "id:77"); err != nil {
 		t.Fatal(err)
 	}
-	if r, _, _ := s.Request(ctx, id); r.InvitedAt.IsZero() {
-		t.Error("InvitedAt not set")
+	if r, _, _ := s.Request(ctx, id); r.InvitedAt.IsZero() || r.PlexAccount != "id:77" {
+		t.Errorf("InvitedAt %v, PlexAccount %q", r.InvitedAt, r.PlexAccount)
 	}
 
 	if err := s.Decide(ctx, id, StatusDenied, "bob", "a•••@e•••.com"); err != nil {

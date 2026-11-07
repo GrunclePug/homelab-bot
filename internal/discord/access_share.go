@@ -11,6 +11,7 @@ import (
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 
+	"github.com/grunclepug/homelab-bot/internal/plex"
 	"github.com/grunclepug/homelab-bot/internal/store"
 )
 
@@ -110,8 +111,9 @@ func (a *access) removeShare(ctx context.Context, id int, approver string, msg d
 		_, uerr := a.store.SetShareState(fin, id, store.ShareAsked, store.ShareRemoving)
 		return "", errors.Join(err, uerr)
 	}
-	if err := a.plex.RemoveShare(ctx, r.ShareID); err != nil {
-		a.log.Warn("remove plex share failed", "request", id, "err", err)
+	removed, err := a.plex.RemoveAccess(ctx, plex.Account(r.PlexAccount))
+	if err != nil {
+		a.log.Warn("remove plex access failed", "request", id, "err", err)
 		if _, uerr := a.store.SetShareState(fin, id, store.ShareAsked, store.ShareRemoving); uerr != nil {
 			return "", errors.Join(err, uerr)
 		}
@@ -120,7 +122,11 @@ func (a *access) removeShare(ctx context.Context, id int, approver string, msg d
 	if _, err := a.store.SetShareState(fin, id, store.ShareRemoved, store.ShareRemoving); err != nil {
 		return "", err
 	}
-	return "Plex access removed.", a.settleShare(fin, msg, colorResolved, "Plex access removed by "+escape(approver))
+	text, status := "Plex access removed.", "Plex access removed by "+escape(approver)
+	if !removed {
+		text, status = "They no longer had Plex access, so there was nothing to remove.", "Nothing to remove (checked by "+escape(approver)+")"
+	}
+	return text, a.settleShare(fin, msg, colorResolved, status)
 }
 
 // keepShare records that an approver chose to keep the share.

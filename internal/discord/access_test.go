@@ -71,17 +71,20 @@ func (f *fakeAccessDiscord) dms(userID snowflake.ID) []string {
 	return out
 }
 
-// fakePlexTV is plex.tv with one server; invites fail while failInvite
-// is set. Each invite creates a share, numbered from 100.
+// fakePlexTV is plex.tv with one server, named "media". Each invite
+// becomes a pending invite for Plex account 100, 101 and so on; accepted
+// maps an email address to the account ID of an accepted share. Invites
+// fail while failInvite is set.
 type fakePlexTV struct {
 	mu         sync.Mutex
 	invited    []string
-	removed    []int
+	pending    map[string]int // email address to account ID
+	accepted   map[string]int
+	removed    []string // DELETE paths
 	failInvite bool
 	failRemove bool
-	noShareID  bool           // invites name no share, and none is listed
-	shared     map[string]int // accounts already shared with, and their share IDs
-	echo       bool           // the failure message repeats the invited address
+	unlisted   bool // invites don't show up in plex.tv's lists
+	echo       bool // the failure message repeats the invited address
 }
 
 func (f *fakePlexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +92,7 @@ func (f *fakePlexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	switch r.Method + " " + r.URL.Path {
 	case "GET /api/servers/srv":
-		io.WriteString(w, `<MediaContainer><Server machineIdentifier="srv"><Section id="1" key="1" title="Movies"/></Server></MediaContainer>`)
+		io.WriteString(w, `<MediaContainer><Server name="media" machineIdentifier="srv"><Section id="1" key="1" title="Movies"/></Server></MediaContainer>`)
 	case "POST /api/servers/srv/shared_servers":
 		var body struct {
 			Shared struct {
@@ -97,7 +100,13 @@ func (f *fakePlexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} `json:"shared_server"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
-		if _, ok := f.shared[body.Shared.Email]; ok {
+		email := body.Shared.Email
+		if _, ok := f.accepted[email]; ok {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `<Response code="400" status="You're already sharing this server with the invited account. Please edit your existing share."/>`)
+			return
+		}
+		if _, ok := f.pending[email]; ok {
 			w.WriteHeader(http.StatusBadRequest)
 			io.WriteString(w, `<Response code="400" status="You're already sharing this server with the invited account. Please edit your existing share."/>`)
 			return
@@ -106,32 +115,44 @@ func (f *fakePlexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			msg := "Unknown user"
 			if f.echo {
 				// plex.tv might name the account, in any case.
-				msg = "Unknown user " + strings.ToUpper(body.Shared.Email)
+				msg = "Unknown user " + strings.ToUpper(email)
 			}
 			w.WriteHeader(http.StatusBadRequest)
 			io.WriteString(w, `<errors><error code="1000" message="`+msg+`"/></errors>`)
 			return
 		}
-		f.invited = append(f.invited, body.Shared.Email)
-		if f.noShareID {
-			io.WriteString(w, `<SharedServer/>`)
-			return
+		f.invited = append(f.invited, email)
+		if f.pending == nil {
+			f.pending = map[string]int{}
 		}
-		fmt.Fprintf(w, `<SharedServer id="%d"/>`, 99+len(f.invited))
+		if !f.unlisted {
+			f.pending[email] = 99 + len(f.invited)
+		}
+		io.WriteString(w, `<SharedServer/>`)
 	case "GET /api/servers/srv/shared_servers":
 		io.WriteString(w, "<MediaContainer>")
-		for email, id := range f.shared {
-			fmt.Fprintf(w, `<SharedServer id="%d" email="%s"/>`, id, email)
+		for email, id := range f.accepted {
+			fmt.Fprintf(w, `<SharedServer id="%d" userID="%d" email="%s"/>`, id+5000, id, email)
+		}
+		io.WriteString(w, "</MediaContainer>")
+	case "GET /api/invites/requested":
+		io.WriteString(w, "<MediaContainer>")
+		for email, id := range f.pending {
+			fmt.Fprintf(w, `<Invite id="%d" email="%s" friend="0" home="0" server="1"><Server name="media"/></Invite>`, id, email)
 		}
 		io.WriteString(w, "</MediaContainer>")
 	default:
-		if id, ok := strings.CutPrefix(r.URL.Path, "/api/servers/srv/shared_servers/"); ok && r.Method == http.MethodDelete {
+		if r.Method == http.MethodDelete {
 			if f.failRemove {
 				http.Error(w, "busy", http.StatusServiceUnavailable)
 				return
 			}
-			n, _ := strconv.Atoi(id)
-			f.removed = append(f.removed, n)
+			f.removed = append(f.removed, r.URL.Path)
+			for email, id := range f.pending {
+				if r.URL.Path == "/api/invites/requested/"+strconv.Itoa(id) {
+					delete(f.pending, email)
+				}
+			}
 			return
 		}
 		http.NotFound(w, r)
@@ -452,7 +473,7 @@ func TestAccessRecoverInterrupted(t *testing.T) {
 			t.Fatalf("claim %d: %v, %v", id, ok, err)
 		}
 	}
-	if err := st.MarkInvited(ctx, 2, 0); err != nil {
+	if err := st.MarkInvited(ctx, 2, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -488,7 +509,7 @@ type cancelAfterInvite struct {
 	cancel func()
 }
 
-func (c cancelAfterInvite) Invite(ctx context.Context, who string) (int, error) {
+func (c cancelAfterInvite) Invite(ctx context.Context, who string) (plex.Account, error) {
 	defer c.cancel()
 	return c.plexSharer.Invite(ctx, who)
 }

@@ -119,9 +119,9 @@ Seerr needs no setup from the bot if its Plex sign-in for new users is enabled: 
 
 ### Removing access
 
-The bot remembers the Plex share each approval creates. When that member leaves the server, or loses the media role, it posts a **Remove Plex access?** card to `DISCORD_ACCESS_CHANNEL_ID` with **Remove access** and **Keep** buttons for approvers. Nothing changes in Plex until an approver presses one. Remove access stops sharing the server with that account, whether or not they had accepted the invite; Keep leaves it, and the member is asked about again if they leave later, or lose the media role after getting it back. Once removed, they can request access again.
+Each approval records who its Plex access is for: the member's Plex account ID, or, for an invite to an email address with no Plex account yet, a SHA-256 of the lowercased address, never the address itself. When that member leaves the server, or loses the media role, it posts a **Remove Plex access?** card to `DISCORD_ACCESS_CHANNEL_ID` with **Remove access** and **Keep** buttons for approvers. Nothing changes in Plex until an approver presses one. Remove access deletes their share if they accepted the invite, or cancels the invite if they haven't; Keep leaves it, and the member is asked about again if they leave later, or lose the media role after getting it back. Once removed, they can request access again.
 
-Members approved before the bot recorded shares, or added to Plex some other way, aren't tracked: remove them by hand under Manage Library Access in Plex.
+Members approved before the bot recorded this, or added to Plex some other way, aren't tracked: remove them by hand under Manage Library Access in Plex. Removal goes through plex.tv's sharing and invite APIs, which Plex doesn't document.
 
 ### Plex settings
 
