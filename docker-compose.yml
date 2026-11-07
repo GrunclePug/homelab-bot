@@ -1,0 +1,18 @@
+services:
+  homelab-bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LISTEN_ADDR: ":8080"
+      DB_PATH: /data/homelab-bot.db
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "/homelab-bot", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
