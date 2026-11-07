@@ -1,0 +1,11 @@
+# Build output
+bin/
+
+# Local database
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Private environment configuration
+.env

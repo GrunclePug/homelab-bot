@@ -1,0 +1,161 @@
+# homelab-bot
+
+A Discord bot for a self-hosted media server: Seerr issue reports with one-click fixes, and a download queue for members.
+
+## Overview
+
+homelab-bot relays Seerr issue reports into a Discord channel, with buttons that let an admin replace a bad file in one click: the release behind the file is blocklisted, the file deleted and a new one searched for in Sonarr or Radarr. Members can also check what qBittorrent is downloading with `/queue`. It is for people who run Seerr, Sonarr, Radarr and qBittorrent for a small Discord community, and it ships as a single static binary, usually run with Docker Compose.
+
+## Features
+
+* **Issue relay**: each Seerr issue becomes one post in the support channel, kept up to date as it is commented on, resolved and reopened.
+* **Replace**: an admin-only button that blocklists the current release, deletes the file and starts a search, after a confirmation that lists exactly what will change.
+* **Episode picker**: for an issue about a whole season or show, the admin picks the episodes or seasons to replace.
+* **Resolve**: an admin-only button that resolves the issue in Seerr.
+* **`/queue`**: shows members what is downloading, stalled, queued or stopped, visible only to them.
+* **Health check**: `GET /healthz`, plus a `-healthcheck` flag for container health checks.
+* **Pure Go**: no CGO, one static binary, with SQLite through `modernc.org/sqlite`.
+* **Outbound only**: connects to Discord over the gateway; the only listener is the webhook for Seerr on your own network.
+
+## Installation
+
+### Requirements
+
+* Go 1.27.3 or newer
+* Make
+* Docker with Compose, to run it as a container
+* A Discord bot application, and Seerr, Sonarr v4, Radarr and qBittorrent 5 reachable from the bot
+
+### Build
+
+```sh
+git clone https://github.com/grunclepug/homelab-bot.git
+cd homelab-bot
+make build
+sudo make install    # optional, installs to /usr/local/bin
+```
+
+## Usage
+
+Copy `.env.example` to `.env`, fill it in, and run the bot:
+
+```sh
+cp .env.example .env
+make run
+```
+
+It registers `/queue` in your server, connects to Discord and listens for Seerr on `LISTEN_ADDR`. Point Seerr's webhook at it as described in [Seerr webhook](#seerr-webhook).
+
+```sh
+homelab-bot -version        # print the version
+homelab-bot -healthcheck    # exit 0 if the running bot's /healthz is healthy
+```
+
+### Configuration
+
+Settings come from environment variables, loaded from `.env` if it exists. Variables already set in the environment win. The bot checks them at startup and stops with a message naming anything missing or invalid.
+
+| Variable | Flag | Default | Description |
+|---|---|---|---|
+| `DISCORD_TOKEN` | | | Bot token |
+| `DISCORD_GUILD_ID` | | | The server the bot serves |
+| `DISCORD_SUPPORT_CHANNEL_ID` | | | Channel for issue posts |
+| `DISCORD_ADMIN_ROLE_ID` | | | Role that may press Replace and Resolve |
+| `DISCORD_MEDIA_ROLE_ID` | | | Role that may use `/queue` (the admin role may too) |
+| `SEERR_URL` | | | Seerr base URL |
+| `SEERR_API_KEY` | | | Seerr API key |
+| `SEERR_WEBHOOK_SECRET` | | | Value Seerr sends in the `Authorization` header |
+| `SONARR_URL` | | | Sonarr base URL |
+| `SONARR_API_KEY` | | | Sonarr API key |
+| `RADARR_URL` | | | Radarr base URL |
+| `RADARR_API_KEY` | | | Radarr API key |
+| `QBIT_URL` | | | qBittorrent Web UI base URL |
+| `QBIT_USERNAME` | | | qBittorrent Web UI user |
+| `QBIT_PASSWORD` | | | qBittorrent Web UI password |
+| `LISTEN_ADDR` | | `:8080` | Address for the Seerr webhook and `/healthz` |
+| `PORT` | | `8080` | Docker Compose only: host port mapped to the listener |
+| `DB_PATH` | | `data/homelab-bot.db` | SQLite database file |
+| `LOG_LEVEL` | | `info` | `debug`, `info`, `warn` or `error` |
+| | `-version` | | Print the version and exit |
+| | `-healthcheck` | | Request `/healthz` on the local listener and exit 0 or 1 |
+
+The Discord bot needs the `bot` and `applications.commands` scopes, and in the support channel the View Channel, Send Messages, Embed Links and Read Message History permissions. It uses only the Guilds gateway intent.
+
+### Docker
+
+```sh
+cp .env.example .env    # then fill it in
+mkdir data && sudo chown 65532:65532 data
+docker compose up -d --build
+```
+
+The container runs as the distroless non-root user (UID 65532), so `data/` must be writable by that UID. The database lives in `data/homelab-bot.db`. Compose maps host port `${PORT}` (default `8080`) to the listener, and its health check runs `/homelab-bot -healthcheck`.
+
+## Seerr webhook
+
+In Seerr, under Settings, Notifications, Webhook:
+
+* **Webhook URL**: `http://<bot-host>:<port>/seerr`
+* **Authorization Header**: the value of `SEERR_WEBHOOK_SECRET`
+* **Notification types**: Issue Reported, Issue Commented, Issue Resolved and Issue Reopened only
+* **JSON Payload**:
+
+```json
+{
+  "event": "{{event}}",
+  "notification_type": "{{notification_type}}",
+  "subject": "{{subject}}",
+  "message": "{{message}}",
+  "image": "{{image}}",
+  "issue_id": "{{issue_id}}",
+  "issue_type": "{{issue_type}}",
+  "issue_status": "{{issue_status}}",
+  "reported_by": "{{reportedBy_username}}",
+  "commented_by": "{{commentedBy_username}}",
+  "comment": "{{comment_message}}",
+  "media_type": "{{media_type}}",
+  "tmdb_id": "{{media_tmdbid}}",
+  "tvdb_id": "{{media_tvdbid}}"
+}
+```
+
+Seerr's Test button posts "Seerr test notification received." to the support channel. For each issue the bot also fetches the issue from Seerr's API to learn which season and episode it is about.
+
+## Replace
+
+Pressing Replace on an issue post works out the file from the issue:
+
+* **Movie**: the Radarr movie with the issue's TMDB ID, and its file.
+* **Episode**: the Sonarr series with the issue's TVDB ID, and that episode's file.
+* **Season or whole show**: a menu, visible only to the admin, of the season's episodes or the show's seasons, plus "All of them".
+
+The admin then sees what will be replaced (quality, release group and size) and confirms or cancels. Nothing changes until it is confirmed. For each file the bot then:
+
+1. Blocklists the release by marking its grab failed. This is the grab whose download produced the current file, or the most recent grab if none matches. Without any grab history, for example after a manual import, this step is skipped and the post says so.
+2. Deletes the file.
+3. Searches for a new one, in a single search for every file that was deleted.
+
+A failed blocklist doesn't stop the delete and search; a failed delete means that file isn't searched for. The issue post gets a "Replacement started by" line with the result of each step, and the bot comments on the Seerr issue so the reporter sees it there too. The comment is posted as the Seerr API key's user. The issue stays open until an admin resolves it.
+
+## Development
+
+```sh
+make run      # run locally as version dev
+make test     # run the tests
+make fmt      # format the code
+make lint     # go vet and staticcheck
+make build    # build bin/homelab-bot
+make clean    # remove build output
+```
+
+## Contributing
+
+Fork the repository and open a pull request.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+## Author
+
+Chad Humphries | [Website](https://grunclepug.com/) | [GitHub](https://github.com/GrunclePug) | [More projects](https://github.com/GrunclePug?tab=repositories)
