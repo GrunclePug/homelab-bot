@@ -151,7 +151,7 @@ func TestAccessSubmit(t *testing.T) {
 	if post.ChannelID != accessChannel || e.Title != "Access request #1" || e.Description != "Bob's friend" {
 		t.Errorf("post: channel %v, title %q, description %q", post.ChannelID, e.Title, e.Description)
 	}
-	if field(e, "Plex account") != "`ann@example.com`" || field(e, "Member") != "<@42> (Ann)" {
+	if field(e, "Plex account") != "`a•••@e•••.com`" || field(e, "Member") != "<@42> (Ann)" {
 		t.Errorf("fields: %+v", e.Fields)
 	}
 	if ids := customIDs(post.Components); !slices.Equal(ids, []string{"access:approve:1", "access:deny:1"}) {
@@ -201,7 +201,7 @@ func TestAccessApprove(t *testing.T) {
 	if len(dms) != 1 || !strings.Contains(dms[0], "https://seerr.example") || !strings.Contains(dms[0], "Accept the Plex invite") {
 		t.Errorf("DMs = %q", dms)
 	}
-	want := "Plex invite sent to `ann@example.com`\nMedia role added\nWelcome DM sent"
+	want := "Plex invite sent to `a•••@e•••.com`\nMedia role added\nWelcome DM sent"
 	if text != "Approved.\n"+want {
 		t.Errorf("reply = %q", text)
 	}
@@ -210,7 +210,7 @@ func TestAccessApprove(t *testing.T) {
 	if field(e, fieldStatus) != "Approved by Bob" || field(e, "Onboarding") != want || e.Color != colorApproved || len(m.Components) != 0 {
 		t.Errorf("post after approval: %+v, components %d", e, len(m.Components))
 	}
-	if r, _, _ := st.Request(ctx, 1); r.Status != store.StatusApproved || r.DecidedBy != "Bob" {
+	if r, _, _ := st.Request(ctx, 1); r.Status != store.StatusApproved || r.DecidedBy != "Bob" || r.Plex != "a•••@e•••.com" {
 		t.Errorf("stored = %+v", r)
 	}
 
@@ -305,5 +305,58 @@ func TestAccessDeny(t *testing.T) {
 	// They may ask again later.
 	if why, _ := a.canRequest(ctx, member, false); why != "" {
 		t.Errorf("after denial: %q", why)
+	}
+}
+
+func TestMaskAccount(t *testing.T) {
+	tests := map[string]string{
+		"discord2@exampledom.com": "d•••@e•••.com",
+		"a@b.co.uk":               "a•••@b•••.uk",
+		"x@localhost":             "x•••@l•••",
+		"@example.com":            "•••@e•••.com",
+		"plexuser":                "plexuser",
+	}
+	for in, want := range tests {
+		if got := maskAccount(in); got != want {
+			t.Errorf("maskAccount(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestAccessNoEmailLeaks checks that the full address appears in no post,
+// reply or DM, whichever way a request goes.
+func TestAccessNoEmailLeaks(t *testing.T) {
+	ctx := context.Background()
+	const email = "ann@example.com"
+	for _, failFirst := range []bool{false, true} {
+		a, fd, fp, st := newTestAccess(t)
+		submitted(t, a, fd)
+		var replies []string
+		if failFirst {
+			fp.failInvite = true
+			text, _ := a.approve(ctx, 1, "Bob")
+			replies = append(replies, text)
+			fp.failInvite = false
+		}
+		text, _ := a.approve(ctx, 1, "Bob")
+		replies = append(replies, text)
+
+		for _, m := range fd.msgs {
+			b, _ := json.Marshal(m)
+			if strings.Contains(string(b), email) {
+				t.Errorf("message %s shows the address: %s", m.ID, b)
+			}
+		}
+		for _, r := range replies {
+			if strings.Contains(r, email) {
+				t.Errorf("reply shows the address: %q", r)
+			}
+		}
+		if r, _, _ := st.Request(ctx, 1); strings.Contains(r.Plex, email) {
+			t.Errorf("stored address after approval: %q", r.Plex)
+		}
+		if !slices.Equal(fp.invited, []string{email}) {
+			t.Errorf("invited = %v, want the full address sent to Plex", fp.invited)
+		}
 	}
 }

@@ -101,7 +101,7 @@ The container runs as the distroless non-root user (UID 65532), so `data/` must 
 
 Run `/access-panel` in the channel where new members should find it, for example a welcome channel, and pin the message it posts. The command is visible only to members with Manage Server, and only the admin role may use it.
 
-A member presses **Request access** and fills in their Plex email or username, plus an optional note. The request is posted to `DISCORD_ACCESS_CHANNEL_ID` with **Approve** and **Deny** buttons, which only the approver role may press. Keep that channel private: it shows the email addresses members type.
+A member presses **Request access** and fills in their Plex email or username, plus an optional note. The request is posted to `DISCORD_ACCESS_CHANNEL_ID` with **Approve** and **Deny** buttons, which only the approver role may press. An email address is shown masked, for example `d•••@e•••.com`, and is kept in full only until the request is decided; a Plex username is shown as typed. Keep the channel private all the same.
 
 Approving a request:
 

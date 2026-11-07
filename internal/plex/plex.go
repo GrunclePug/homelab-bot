@@ -103,7 +103,8 @@ func (c *Client) Invite(ctx context.Context, who string) error {
 		},
 	}
 	if _, err := c.do(ctx, http.MethodPost, "/api/servers/"+url.PathEscape(c.serverID)+"/shared_servers", req); err != nil {
-		return fmt.Errorf("plex: invite %s: %w", who, err)
+		// The error leaves out who, which may be an email address.
+		return fmt.Errorf("plex: invite: %w", err)
 	}
 	return nil
 }

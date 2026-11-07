@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -129,7 +130,6 @@ func run() error {
 		fmt.Fprintln(w, "ok")
 	})
 	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -137,7 +137,14 @@ func run() error {
 		IdleTimeout:       2 * time.Minute,
 	}
 
+	// Take the port before connecting to Discord, so a clash fails fast.
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+
 	if err := bot.Start(ctx); err != nil {
+		ln.Close()
 		return err
 	}
 	defer func() {
@@ -150,7 +157,7 @@ func run() error {
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("listening", "addr", cfg.ListenAddr)
-		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 			errc <- fmt.Errorf("listen: %w", err)
 			return
 		}

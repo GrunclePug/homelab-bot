@@ -1,5 +1,5 @@
 # homelab-bot version
-VERSION = 0.3.0
+VERSION = 0.3.1
 
 APP = homelab-bot
 

@@ -50,7 +50,7 @@ type accessStore interface {
 	OpenRequest(ctx context.Context, userID string) (bool, error)
 	Request(ctx context.Context, id int) (store.AccessRequest, bool, error)
 	Claim(ctx context.Context, id int, from, to string) (bool, error)
-	Decide(ctx context.Context, id int, status, decidedBy string) error
+	Decide(ctx context.Context, id int, status, decidedBy, plex string) error
 }
 
 // access runs access requests: members ask, approvers approve or deny,
@@ -165,7 +165,7 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 			}, true))
 	}
 
-	steps := []string{"Plex invite sent to " + code(r.Plex)}
+	steps := []string{"Plex invite sent to " + code(maskAccount(r.Plex))}
 	if err := a.rest.AddMemberRole(a.guild, userID, a.mediaRole, rest.WithCtx(ctx), rest.WithReason("Access request approved by "+approver)); err != nil {
 		a.log.Warn("add media role failed", "request", id, "err", err)
 		steps = append(steps, "Couldn't add the media role, add it by hand ("+err.Error()+")")
@@ -179,7 +179,7 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 		steps = append(steps, "Welcome DM sent")
 	}
 
-	if err := a.store.Decide(ctx, id, store.StatusApproved, approver); err != nil {
+	if err := a.store.Decide(ctx, id, store.StatusApproved, approver, maskAccount(r.Plex)); err != nil {
 		return "", err
 	}
 	body := strings.Join(steps, "\n")
@@ -198,7 +198,7 @@ func (a *access) deny(ctx context.Context, id int, approver string) (string, err
 	if err != nil || r == nil {
 		return textHandled, err
 	}
-	if err := a.store.Decide(ctx, id, store.StatusDenied, approver); err != nil {
+	if err := a.store.Decide(ctx, id, store.StatusDenied, approver, maskAccount(r.Plex)); err != nil {
 		return "", err
 	}
 	reply := "Denied."
@@ -302,7 +302,7 @@ func requestEmbed(r store.AccessRequest) discord.Embed {
 		WithColor(colorPending).
 		WithTimestamp(time.Now()).
 		AddField("Member", "<@"+r.UserID+"> ("+escape(r.UserName)+")", true).
-		AddField("Plex account", code(r.Plex), true).
+		AddField("Plex account", code(maskAccount(r.Plex)), true).
 		AddField(fieldStatus, "Waiting for an approver", true)
 	if r.Note != "" {
 		e = e.WithDescription(truncate(r.Note, maxDescription))
@@ -324,6 +324,29 @@ var markdownEscaper = strings.NewReplacer(
 
 // escape stops Discord formatting user-typed text.
 func escape(s string) string { return markdownEscaper.Replace(s) }
+
+// maskAccount hides most of an email address, so nobody reading a post
+// learns it: discord2@example.com becomes d•••@e•••.com. A Plex username
+// is shown as it is.
+func maskAccount(s string) string {
+	local, domain, ok := strings.Cut(s, "@")
+	if !ok {
+		return s
+	}
+	masked := maskPart(local) + "@"
+	if i := strings.LastIndex(domain, "."); i > 0 {
+		return masked + maskPart(domain[:i]) + domain[i:]
+	}
+	return masked + maskPart(domain)
+}
+
+func maskPart(s string) string {
+	r := []rune(s)
+	if len(r) == 0 {
+		return "•••"
+	}
+	return string(r[0]) + "•••"
+}
 
 // code shows user-typed text as inline code, so it copies exactly.
 func code(s string) string { return "`" + strings.ReplaceAll(s, "`", "'") + "`" }

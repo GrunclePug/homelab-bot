@@ -129,11 +129,12 @@ func (s *Store) Claim(ctx context.Context, id int, from, to string) (bool, error
 	return n == 1, nil
 }
 
-// Decide closes a request as approved or denied.
-func (s *Store) Decide(ctx context.Context, id int, status, decidedBy string) error {
+// Decide closes a request as approved or denied, and replaces the Plex
+// account with plex, normally a masked form: it isn't needed any more.
+func (s *Store) Decide(ctx context.Context, id int, status, decidedBy, plex string) error {
 	_, err := s.db.ExecContext(ctx,
-		"UPDATE access_request SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?",
-		status, decidedBy, time.Now().UTC().Format(time.RFC3339), id)
+		"UPDATE access_request SET status = ?, decided_by = ?, decided_at = ?, plex = ? WHERE id = ?",
+		status, decidedBy, time.Now().UTC().Format(time.RFC3339), plex, id)
 	if err != nil {
 		return fmt.Errorf("decide access request %d: %w", id, err)
 	}

@@ -39,14 +39,14 @@ func TestAccessRequests(t *testing.T) {
 		t.Error("a processing request should still count as open")
 	}
 
-	if err := s.Decide(ctx, id, StatusDenied, "bob"); err != nil {
+	if err := s.Decide(ctx, id, StatusDenied, "bob", "a•••@e•••.com"); err != nil {
 		t.Fatal(err)
 	}
 	r, ok, err := s.Request(ctx, id)
 	if err != nil || !ok {
 		t.Fatalf("Request: %v, %v", ok, err)
 	}
-	if r.Status != StatusDenied || r.DecidedBy != "bob" || r.DecidedAt.IsZero() || r.MessageID != "20" || r.Plex != "ann@example.com" {
+	if r.Status != StatusDenied || r.DecidedBy != "bob" || r.DecidedAt.IsZero() || r.MessageID != "20" || r.Plex != "a•••@e•••.com" {
 		t.Errorf("request = %+v", r)
 	}
 	if open, _ := s.OpenRequest(ctx, "1"); open {
