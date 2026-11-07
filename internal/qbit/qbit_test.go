@@ -130,8 +130,12 @@ func TestClientLogin(t *testing.T) {
 				http.Error(w, "csrf", http.StatusUnauthorized)
 				return
 			}
-			if r.PostForm.Get("username") != "admin" || r.PostForm.Get("password") != "pw" {
-				fmt.Fprint(w, "Fails.")
+			if r.PostForm.Get("username") != "admin" {
+				fmt.Fprint(w, "Fails.") // qBittorrent 4
+				return
+			}
+			if r.PostForm.Get("password") != "pw" {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized) // qBittorrent 5
 				return
 			}
 			logins++
@@ -166,8 +170,9 @@ func TestClientLogin(t *testing.T) {
 		t.Errorf("after expiry: err %v, logins %d; want one new login", err, logins)
 	}
 
-	bad := NewClient(srv.URL, "admin", "wrong")
-	if _, err := bad.Torrents(ctx); err == nil || !strings.Contains(err.Error(), "login failed") {
-		t.Errorf("bad password: err = %v", err)
+	for _, bad := range []*Client{NewClient(srv.URL, "admin", "wrong"), NewClient(srv.URL, "nobody", "pw")} {
+		if _, err := bad.Torrents(ctx); err == nil || !strings.Contains(err.Error(), "login failed") {
+			t.Errorf("bad credentials: err = %v", err)
+		}
 	}
 }

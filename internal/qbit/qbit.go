@@ -108,6 +108,10 @@ func (c *Client) login(ctx context.Context) error {
 	switch {
 	case resp.StatusCode == http.StatusForbidden:
 		return errors.New("qbittorrent: login refused: this IP is banned after too many failed logins")
+	case resp.StatusCode == http.StatusUnauthorized:
+		// qBittorrent 5 answers bad credentials with 401; older versions
+		// with 200 and "Fails.".
+		return errors.New("qbittorrent: login failed: check QBIT_USERNAME and QBIT_PASSWORD")
 	case resp.StatusCode != http.StatusOK:
 		return fmt.Errorf("qbittorrent: login: %s", resp.Status)
 	case strings.TrimSpace(string(body)) != "Ok.":
