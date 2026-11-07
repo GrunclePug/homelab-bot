@@ -409,11 +409,11 @@ func TestAccessDeny(t *testing.T) {
 
 func TestMaskAccount(t *testing.T) {
 	tests := map[string]string{
-		"discord2@exampledom.com": "d•••@e•••.com",
-		"a@b.co.uk":               "a•••@b•••.uk",
-		"x@localhost":             "x•••@l•••",
-		"@example.com":            "•••@e•••.com",
-		"plexuser":                "plexuser",
+		"discord2@example.com": "d•••@e•••.com",
+		"a@b.co.uk":            "a•••@b•••.uk",
+		"x@localhost":          "x•••@l•••",
+		"@example.com":         "•••@e•••.com",
+		"plexuser":             "plexuser",
 	}
 	for in, want := range tests {
 		if got := maskAccount(in); got != want {
