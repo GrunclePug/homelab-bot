@@ -118,7 +118,9 @@ func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *
 		Users: []snowflake.ID{},
 	}
 	client, err := disgo.New(cfg.Token,
-		bot.WithLogger(log.With("component", "disgo")),
+		// At debug level disgo logs every REST body, which includes the
+		// member's full email in the review step and interaction tokens.
+		bot.WithLogger(slog.New(atLeast{Handler: log.Handler(), min: slog.LevelInfo}).With("component", "disgo")),
 		bot.WithGatewayConfigOpts(gateway.WithIntents(gateway.IntentGuilds)),
 		bot.WithEventManagerConfigOpts(bot.WithAsyncEventsEnabled()),
 		bot.WithRestConfigOpts(rest.WithDefaultAllowedMentions(none)),
@@ -148,6 +150,25 @@ func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *
 		log:       log,
 	}
 	return b, nil
+}
+
+// atLeast passes on only records at min or above, whatever the wrapped
+// handler would allow.
+type atLeast struct {
+	slog.Handler
+	min slog.Level
+}
+
+func (h atLeast) Enabled(ctx context.Context, l slog.Level) bool {
+	return l >= h.min && h.Handler.Enabled(ctx, l)
+}
+
+func (h atLeast) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return atLeast{Handler: h.Handler.WithAttrs(attrs), min: h.min}
+}
+
+func (h atLeast) WithGroup(name string) slog.Handler {
+	return atLeast{Handler: h.Handler.WithGroup(name), min: h.min}
 }
 
 // commands are the guild's slash commands.

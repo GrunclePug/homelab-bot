@@ -224,7 +224,7 @@ func (a *access) onboard(ctx context.Context, r store.AccessRequest, userID snow
 	body := strings.Join(steps, "\n")
 	err := a.updatePost(ctx, r, func(e discord.Embed) discord.Embed {
 		e.Color = colorApproved
-		e = setField(e, fieldStatus, "Approved by "+approver, true)
+		e = setField(e, fieldStatus, "Approved by "+escape(approver), true)
 		return setField(e, "Onboarding", body, false)
 	}, false)
 	return "Approved.\n" + body, err
@@ -243,7 +243,7 @@ func (a *access) inviteFailed(ctx context.Context, r store.AccessRequest, userID
 	}
 	err := a.updatePost(ctx, r, func(e discord.Embed) discord.Embed {
 		e.Color = colorResolved
-		e = setField(e, fieldStatus, "Invite failed (approved by "+approver+")", true)
+		e = setField(e, fieldStatus, "Invite failed (approved by "+escape(approver)+")", true)
 		return setField(e, "Problem", truncate(inviteErr.Error(), maxFieldValue)+"\n"+dmNote, false)
 	}, false)
 	return "The Plex invite failed, so nothing else was done and the request is closed:\n" + inviteErr.Error() + "\n" + dmNote, err
@@ -269,7 +269,7 @@ func (a *access) deny(ctx context.Context, id int, approver string) (string, err
 	}
 	err = a.updatePost(ctx, *r, func(e discord.Embed) discord.Embed {
 		e.Color = colorResolved
-		e = setField(e, fieldStatus, "Denied by "+approver, true)
+		e = setField(e, fieldStatus, "Denied by "+escape(approver), true)
 		return setField(e, "Notified", dmNote, false)
 	}, false)
 	return reply + " " + dmNote, err
@@ -401,7 +401,8 @@ func requestEmbed(r store.AccessRequest) discord.Embed {
 		AddField("Plex account", code(maskAccount(r.Plex)), true).
 		AddField(fieldStatus, "Waiting for an approver", true)
 	if r.Note != "" {
-		e = e.WithDescription(truncate(r.Note, maxDescription))
+		// Escaped, so a note can't show approvers a disguised link.
+		e = e.WithDescription(truncate(escape(r.Note), maxDescription))
 	}
 	return e
 }
@@ -416,9 +417,11 @@ func requestButtons(id int) []discord.InteractiveComponent {
 
 var markdownEscaper = strings.NewReplacer(
 	`\`, `\\`, `*`, `\*`, `_`, `\_`, "`", "\\`", `~`, `\~`, `|`, `\|`, `>`, `\>`,
+	`[`, `\[`, `]`, `\]`, `#`, `\#`,
 )
 
-// escape stops Discord formatting user-typed text.
+// escape stops Discord formatting user-typed text, including masked links
+// ([text](url)) and headings.
 func escape(s string) string { return markdownEscaper.Replace(s) }
 
 // maskAccount hides most of an email address, so nobody reading a post

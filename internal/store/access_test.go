@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -73,5 +75,36 @@ func TestAccessRequests(t *testing.T) {
 	}
 	if _, ok, _ := s.Request(ctx, id2); ok {
 		t.Error("deleted request still there")
+	}
+}
+
+// TestScrubLeavesNoCopy checks that once a request is decided, its email
+// address is in neither the database file nor its WAL.
+func TestScrubLeavesNoCopy(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bot.db")
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const email = "scrub-me@example.com"
+	id, err := s.CreateRequest(ctx, AccessRequest{UserID: "1", UserName: "ann", Plex: email})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Decide(ctx, id, StatusApproved, "bob", "s•••@e•••.com"); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(path + "*")
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(b, []byte(email)) {
+			t.Errorf("%s still holds the address", filepath.Base(f))
+		}
 	}
 }

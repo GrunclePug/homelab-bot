@@ -183,13 +183,21 @@ func (s *Store) Claim(ctx context.Context, id int, from, to, by string) (bool, e
 }
 
 // Decide closes a request as approved, denied or failed, and replaces the Plex
-// account with plex, normally a masked form: it isn't needed any more.
+// account with plex, normally a masked form: it isn't needed any more, so no
+// copy of it is kept on disk either.
 func (s *Store) Decide(ctx context.Context, id int, status, decidedBy, plex string) error {
 	_, err := s.db.ExecContext(ctx,
 		"UPDATE access_request SET status = ?, decided_by = ?, decided_at = ?, plex = ? WHERE id = ?",
 		status, decidedBy, time.Now().UTC().Format(time.RFC3339), plex, id)
 	if err != nil {
 		return fmt.Errorf("decide access request %d: %w", id, err)
+	}
+	// secure_delete clears the old value from the database file, but the
+	// WAL still holds the page as it was until a checkpoint. If a reader
+	// is busy, SQLite reports that in the result instead of an error and
+	// leaves the rest to the next checkpoint.
+	if _, err := s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return fmt.Errorf("decide access request %d: checkpoint: %w", id, err)
 	}
 	return nil
 }

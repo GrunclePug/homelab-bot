@@ -193,7 +193,7 @@ func (r *relay) edit(ctx context.Context, msg *discord.Message, change func(disc
 }
 
 func (r *relay) reply(ctx context.Context, msg *discord.Message, p seerr.Payload) error {
-	who := orDefault(p.CommentedBy, "Someone")
+	who := escape(orDefault(p.CommentedBy, "Someone"))
 	text := strings.TrimSpace(p.Comment)
 	if text == "" {
 		text = "(empty comment)"

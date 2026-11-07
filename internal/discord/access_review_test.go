@@ -2,12 +2,15 @@ package discord
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
+
+	"github.com/grunclepug/homelab-bot/internal/store"
 )
 
 func TestCheckPlexAccount(t *testing.T) {
@@ -115,5 +118,33 @@ func TestDrain(t *testing.T) {
 	b.handlers.Done()
 	if err := b.Drain(context.Background()); err != nil {
 		t.Errorf("Drain after the handler finished: %v", err)
+	}
+}
+
+func TestDisgoLogsAtInfo(t *testing.T) {
+	var buf strings.Builder
+	debug := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	l := slog.New(atLeast{Handler: debug.Handler(), min: slog.LevelInfo}).With("component", "disgo")
+	if l.Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("disgo logger enabled at debug")
+	}
+	l.Debug("new request", "body", "ann@example.com")
+	l.Info("connected")
+	if strings.Contains(buf.String(), "ann@example.com") || !strings.Contains(buf.String(), "connected") {
+		t.Errorf("log = %q", buf.String())
+	}
+}
+
+func TestEscapeLinks(t *testing.T) {
+	r := store.AccessRequest{ID: 1, UserID: "42", UserName: "[Ann](https://evil.example)", Plex: "ann",
+		Note: "# Hi\n[Approve here](https://evil.example)"}
+	e := requestEmbed(r)
+	for _, s := range []string{e.Description, field(e, "Member")} {
+		if strings.Contains(s, "](") && !strings.Contains(s, `\](`) {
+			t.Errorf("unescaped masked link: %q", s)
+		}
+	}
+	if !strings.HasPrefix(e.Description, `\# Hi`) {
+		t.Errorf("heading not escaped: %q", e.Description)
 	}
 }
