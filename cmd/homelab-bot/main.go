@@ -56,6 +56,10 @@ func main() {
 // checkHealth asks the running bot's listener for /healthz. It runs inside
 // the distroless container, which has no curl.
 func checkHealth() error {
+	// Read .env like the bot does, so a LISTEN_ADDR set only there counts.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("load .env: %w", err)
+	}
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
 		addr = config.DefaultListenAddr

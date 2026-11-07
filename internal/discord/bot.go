@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
@@ -218,9 +219,17 @@ func (b *Bot) Ready() error {
 }
 
 // HandleSeerr acts on a Seerr webhook payload.
+//
+// It doesn't stop if Seerr drops the connection: a post made but not yet
+// recorded would be posted again by the next event.
 func (b *Bot) HandleSeerr(ctx context.Context, p seerr.Payload) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayTimeout)
+	defer cancel()
 	return b.relay.handle(ctx, p)
 }
+
+// relayTimeout bounds the handling of one Seerr event.
+const relayTimeout = 30 * time.Second
 
 // inGuild reports whether an interaction comes from the bot's own server.
 func (b *Bot) inGuild(guildID *snowflake.ID) bool {
@@ -250,7 +259,15 @@ func (b *Bot) onCommand(e *events.ApplicationCommandInteractionCreate) {
 		b.ephemeral(e.CreateMessage, "This bot only works in its own server.")
 		return
 	}
-	switch name := e.SlashCommandInteractionData().CommandName(); name {
+	// The application may have other kinds of command, such as context
+	// menu entries, whose data isn't slash command data.
+	data, ok := e.Data.(discord.SlashCommandInteractionData)
+	if !ok {
+		b.log.Warn("unsupported command type", "name", e.Data.CommandName())
+		b.ephemeral(e.CreateMessage, "Unknown command.")
+		return
+	}
+	switch name := data.CommandName(); name {
 	case "queue":
 		b.queue(e)
 	case "access-panel":

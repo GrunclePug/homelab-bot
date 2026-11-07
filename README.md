@@ -46,7 +46,7 @@ cp .env.example .env
 make run
 ```
 
-It registers `/queue` in your server, connects to Discord and listens for Seerr on `LISTEN_ADDR`. Point Seerr's webhook at it as described in [Seerr webhook](#seerr-webhook).
+It registers `/queue` and `/access-panel` in your server, connects to Discord and listens for Seerr on `LISTEN_ADDR`. Point Seerr's webhook at it as described in [Seerr webhook](#seerr-webhook).
 
 ```sh
 homelab-bot -version        # print the version
@@ -83,9 +83,9 @@ Settings come from environment variables, loaded from `.env` if it exists. Varia
 | `DB_PATH` | | `data/homelab-bot.db` | SQLite database file |
 | `LOG_LEVEL` | | `info` | `debug`, `info`, `warn` or `error` |
 | | `-version` | | Print the version and exit |
-| | `-healthcheck` | | Request `/healthz` on the local listener and exit 0 or 1 |
+| | `-healthcheck` | | Request `/healthz` on the local listener (port from `LISTEN_ADDR`, read from the environment or `.env`) and exit 0 or 1 |
 
-The Discord bot needs the `bot` and `applications.commands` scopes. In the support and access channels it needs View Channel, Send Messages, Embed Links and Read Message History, and in the server Manage Roles, with its own role above the media role so it can hand that out. It uses only the Guilds gateway intent.
+The Discord bot needs the `bot` and `applications.commands` scopes. In the support and access channels, and wherever `/access-panel` is run, it needs View Channel, Send Messages, Embed Links and Read Message History, and in the server Manage Roles, with its own role above the media role so it can hand that out. It uses only the Guilds gateway intent.
 
 ### Docker
 
@@ -95,7 +95,7 @@ mkdir data && sudo chown 65532:65532 data
 docker compose up -d --build
 ```
 
-The container runs as the distroless non-root user (UID 65532), so `data/` must be writable by that UID. The database lives in `data/homelab-bot.db`. Compose maps host port `${PORT}` (default `8080`) to the listener, and its health check runs `/homelab-bot -healthcheck`.
+The container runs as the distroless non-root user (UID 65532), so `data/` must be writable by that UID. The database lives in `data/homelab-bot.db`. Compose maps host port `${PORT}` (default `8080`) to the listener, and its health check runs `/homelab-bot -healthcheck`. On `docker compose down` or a rebuild, the bot gets up to 2m30s to finish Seerr events and clicks in progress, such as a Replace; clicks that arrive meanwhile are asked to try again in a minute.
 
 ## Access requests
 
@@ -109,7 +109,7 @@ Approving a request:
 2. Gives the member the media role.
 3. DMs the member how to accept the invite and sign in to Seerr.
 
-A failed role or DM is noted on the request post, to be done by hand. Denying a request DMs the member a short note, and they may ask again later. A member can have one open request at a time.
+A failed role or DM is noted on the request post, to be done by hand. Denying a request DMs the member a short note, and they may ask again later. A member can have one open request at a time. If the bot stops while handling a click, at startup it finishes an approval whose Plex invite already went out, and reopens any other request for the approver to press again.
 
 Seerr needs no setup from the bot if its Plex sign-in for new users is enabled: once members accept the invite, they sign in to Seerr with Plex. Libraries added to Plex later aren't shared with existing members automatically.
 
@@ -153,7 +153,7 @@ Pressing Replace on an issue post works out the file from the issue:
 * **Episode**: the Sonarr series with the issue's TVDB ID, and that episode's file.
 * **Season or whole show**: a menu, visible only to the admin, of the season's episodes or the show's seasons, plus "All of them".
 
-The admin then sees what will be replaced (quality, release group and size) and confirms or cancels. Nothing changes until it is confirmed. For each file the bot then:
+An episode stored in the same file as another, such as S01E01E02, is replaced together with it, since deleting the file removes both. The admin then sees what will be replaced (quality, release group and size) and confirms or cancels. Nothing changes until it is confirmed. For each file the bot then:
 
 1. Blocklists the release by marking its grab failed. This is the grab whose download produced the current file, or the most recent grab if none matches. Without any grab history, for example after a manual import, this step is skipped and the post says so.
 2. Deletes the file.
