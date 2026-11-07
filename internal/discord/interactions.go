@@ -161,11 +161,21 @@ func (b *Bot) confirmed(e *events.ComponentInteractionCreate, token string) {
 		b.updateText(e, textExpired)
 		return
 	}
-	b.updateText(e, fmt.Sprintf("Replacing %s…", plural(len(p.Chosen), "file")))
+	if !b.pending.start(p.IssueID) {
+		b.updateText(e, "A replacement for this issue is already running. Wait for it to finish, then press Replace again if needed.")
+		return
+	}
+	defer b.pending.finish(p.IssueID)
+	b.updateText(e, fmt.Sprintf("Replacing %s…", plural(fileCount(p.Chosen), "file")))
 
 	ctx, cancel := context.WithTimeout(context.Background(), replaceTimeout)
 	defer cancel()
-	admin := e.Member().EffectiveName()
+	b.answer(e.Token(), b.finishReplace(ctx, p, e.Member().EffectiveName()))
+}
+
+// finishReplace runs a confirmed replacement and reports it on the issue
+// post and in Seerr. It returns the text for the admin.
+func (b *Bot) finishReplace(ctx context.Context, p *pendingReplace, admin string) string {
 	results := b.replace.Run(ctx, p.Chosen)
 
 	summaries := make([]string, len(results))
@@ -174,6 +184,10 @@ func (b *Bot) confirmed(e *events.ComponentInteractionCreate, token string) {
 		summaries[i] = "• " + r.Summary()
 		if r.Deleted() {
 			started = append(started, r.Target.Label)
+		}
+		// The summaries give short reasons; the details go to the log.
+		if err := r.Err(); err != nil {
+			b.log.Warn("replace step failed", "issue", p.IssueID, "target", r.Target.Label, "err", err)
 		}
 	}
 
@@ -197,7 +211,16 @@ func (b *Bot) confirmed(e *events.ComponentInteractionCreate, token string) {
 	if len(notes) > 0 {
 		text += "\n\n" + strings.Join(notes, "\n")
 	}
-	b.respondText(ctx, e.Token(), text)
+	return text
+}
+
+// fileCount counts the distinct files among targets.
+func fileCount(targets []replace.Target) int {
+	files := map[int]bool{}
+	for _, t := range targets {
+		files[t.FileID] = true
+	}
+	return len(files)
 }
 
 // reportOnPost adds the replacement's results to the issue post.
@@ -211,7 +234,7 @@ func (b *Bot) reportOnPost(ctx context.Context, issueID int, admin string, summa
 	if msg == nil || len(msg.Embeds) == 0 {
 		return fmt.Errorf("no post recorded for issue %d", issueID)
 	}
-	head := "Replacement started by " + admin
+	head := "Replacement started by " + escape(admin)
 	body := head + "\n" + lines(summaries, maxFieldValue-len([]rune(head))-1)
 	open := true
 	for _, f := range msg.Embeds[0].Fields {
@@ -310,6 +333,9 @@ func pickView(p replace.Plan, token string) discord.MessageUpdate {
 			WithMaxValues(len(chunk))
 		rows = append(rows, discord.NewActionRow(menu))
 	}
+	if len(rows) > 1 {
+		prompt += "\nEach menu is a separate pick: choose from one menu, or use \"All of them\"."
+	}
 	if shown := maxMenus * 25; len(opts) > shown {
 		prompt += fmt.Sprintf("\nOnly the first %d choices fit here; use \"All of them\" for the rest.", shown-1)
 	}
@@ -320,11 +346,16 @@ func pickView(p replace.Plan, token string) discord.MessageUpdate {
 // Cancel buttons.
 func confirmView(title string, chosen []replace.Target, token string) discord.MessageUpdate {
 	ls := make([]string, len(chosen))
+	shared := replace.SharedFile(chosen)
 	for i, t := range chosen {
+		if shared[i] != "" {
+			ls[i] = "• **" + t.Label + "**: same file as " + shared[i]
+			continue
+		}
 		ls[i] = "• **" + t.Label + "**: " + fileInfo(t)
 	}
 	e := discord.NewEmbed().
-		WithTitle(truncate("Replace "+plural(len(chosen), "file")+" of "+title+"?", 256)).
+		WithTitle(truncate("Replace "+plural(fileCount(chosen), "file")+" of "+title+"?", 256)).
 		WithColor(colorOpen).
 		WithDescription(lines(ls, maxDescription)).
 		WithFooterText("Each release is blocklisted, the file deleted and a new one searched for.")

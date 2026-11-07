@@ -19,10 +19,11 @@ import (
 // by path and query; every other request is recorded and answered 200,
 // unless its "METHOD path" is in fail.
 type fakeArr struct {
-	mu    sync.Mutex
-	get   map[string]string
-	fail  map[string]bool
-	calls []string
+	mu       sync.Mutex
+	get      map[string]string
+	fail     map[string]bool // answered 500
+	failCode map[string]int  // answered with this status
+	calls    []string
 }
 
 func (f *fakeArr) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +50,10 @@ func (f *fakeArr) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.calls = append(f.calls, call)
 	if f.fail[r.Method+" "+r.URL.Path] {
 		http.Error(w, "boom", http.StatusInternalServerError)
+		return
+	}
+	if code := f.failCode[r.Method+" "+r.URL.Path]; code != 0 {
+		http.Error(w, http.StatusText(code), code)
 		return
 	}
 	io.WriteString(w, "{}")
@@ -185,7 +190,8 @@ func TestLookup(t *testing.T) {
 
 func TestSelect(t *testing.T) {
 	cands := []Target{
-		{ItemID: 101, Season: 1}, {ItemID: 102, Season: 1}, {ItemID: 201, Season: 2}, {ItemID: 301, Season: 3},
+		{ItemID: 101, FileID: 1, Season: 1}, {ItemID: 102, FileID: 2, Season: 1},
+		{ItemID: 201, FileID: 3, Season: 2}, {ItemID: 301, FileID: 4, Season: 3},
 	}
 	tests := []struct {
 		values []string
@@ -352,6 +358,113 @@ func TestRunMovie(t *testing.T) {
 		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
 	}
 	if got := r.Summary(); got != "Shooter (2007): blocklisted Shooter.2007.BluRay · deleted · search started" {
+		t.Errorf("summary = %q", got)
+	}
+}
+
+// newDoubleSonarr is a fake Sonarr whose season 4 has one file holding
+// S04E01 and S04E02.
+func newDoubleSonarr(t *testing.T) (*fakeArr, *arr.Sonarr, string) {
+	t.Helper()
+	f := &fakeArr{get: map[string]string{
+		"/api/v3/series?tvdbId=311900": seriesJSON,
+		"/api/v3/episode?seriesId=112": `[
+			{"id":401,"seriesId":112,"seasonNumber":4,"episodeNumber":1,"title":"One","hasFile":true,"episodeFileId":701},
+			{"id":402,"seriesId":112,"seasonNumber":4,"episodeNumber":2,"title":"Two","hasFile":true,"episodeFileId":701},
+			{"id":403,"seriesId":112,"seasonNumber":4,"episodeNumber":3,"title":"Three","hasFile":true,"episodeFileId":702}]`,
+		"/api/v3/episodefile?seriesId=112": `[{"id":701,"size":1,"quality":{"quality":{"name":"WEBDL-1080p"}}},{"id":702,"size":1}]`,
+		historyKey("episodeId", "401"):     `{"records":[{"id":5,"eventType":"grabbed","downloadId":"D","sourceTitle":"Show.S04E01E02"}]}`,
+		historyKey("episodeId", "403"):     `{"records":[]}`,
+	}, fail: map[string]bool{}}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	return f, arr.NewSonarr(srv.URL, "key"), srv.URL
+}
+
+func items(ts []Target) []int {
+	var out []int
+	for _, t := range ts {
+		out = append(out, t.ItemID)
+	}
+	return out
+}
+
+func TestSharedFile(t *testing.T) {
+	ctx := context.Background()
+	f, so, _ := newDoubleSonarr(t)
+	s := Service{Sonarr: so}
+
+	// An issue about S04E01 alone also takes in S04E02: deleting the file
+	// removes both.
+	p, err := s.Lookup(ctx, tvIssue(4, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := items(p.Candidates); !slices.Equal(got, []int{401, 402}) {
+		t.Errorf("episode issue candidates = %v, want both episodes of the file", got)
+	}
+	if SharedFile(p.Candidates)[1] != "S04E01 · One" {
+		t.Errorf("SharedFile = %q", SharedFile(p.Candidates))
+	}
+
+	// Picking one episode of a season picks its partner too.
+	season, _ := s.Lookup(ctx, tvIssue(4, 0))
+	if got := items(Select(season.Candidates, []string{"e:402"})); !slices.Equal(got, []int{401, 402}) {
+		t.Errorf("Select(e:402) = %v", got)
+	}
+
+	results := s.Run(ctx, p.Candidates)
+	want := []string{
+		"POST /api/v3/history/failed/5",
+		"DELETE /api/v3/episodefile/701",
+		`POST /api/v3/command {"episodeIds":[401,402],"name":"EpisodeSearch"}`,
+	}
+	if !slices.Equal(f.calls, want) {
+		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
+	}
+	if got := results[1].Summary(); got != "S04E02 · Two: same file as S04E01 · One · deleted · search started" {
+		t.Errorf("summary = %q", got)
+	}
+}
+
+func TestRunAlreadyGone(t *testing.T) {
+	f, so, _ := newDoubleSonarr(t)
+	f.failCode = map[string]int{"DELETE /api/v3/episodefile/702": http.StatusNotFound}
+	s := Service{Sonarr: so}
+	p, _ := s.Lookup(context.Background(), tvIssue(4, 3))
+	r := s.Run(context.Background(), p.Candidates)[0]
+	if !r.Deleted() || !r.AlreadyGone || !r.Searched {
+		t.Fatalf("result = %+v", r)
+	}
+	if !strings.Contains(r.Summary(), "file was already gone · search started") {
+		t.Errorf("summary = %q", r.Summary())
+	}
+}
+
+func TestSummaryHidesHosts(t *testing.T) {
+	ctx := context.Background()
+	f, so, url := newDoubleSonarr(t)
+	f.fail["DELETE /api/v3/episodefile/702"] = true
+	s := Service{Sonarr: so}
+	p, _ := s.Lookup(ctx, tvIssue(4, 3))
+	r := s.Run(ctx, p.Candidates)[0]
+	if got := r.Summary(); !strings.Contains(got, "delete failed (Sonarr answered 500 Internal Server Error)") {
+		t.Errorf("summary = %q", got)
+	}
+	if r.Err() == nil || !strings.Contains(r.Err().Error(), "boom") {
+		t.Errorf("Err = %v, want the details for the log", r.Err())
+	}
+
+	// Sonarr down: the URL stays out of the summary.
+	down := arr.NewSonarr("http://127.0.0.1:1", "key")
+	r = Service{Sonarr: down}.Run(ctx, p.Candidates)[0]
+	got := r.Summary()
+	for _, bad := range []string{"http", "127.0.0.1", url} {
+		if strings.Contains(got, bad) {
+			t.Errorf("summary shows %q: %s", bad, got)
+		}
+	}
+	if !strings.Contains(got, "Sonarr unreachable") {
 		t.Errorf("summary = %q", got)
 	}
 }

@@ -38,11 +38,18 @@ type Config struct {
 	SeerrPublicURL   string
 }
 
+// seerrAPI is the part of the Seerr client the buttons use.
+type seerrAPI interface {
+	Issue(ctx context.Context, id int) (seerr.Issue, error)
+	Comment(ctx context.Context, id int, message string) error
+	Resolve(ctx context.Context, id int) error
+}
+
 // Bot is the Discord bot.
 type Bot struct {
 	cfg     Config
 	client  *bot.Client
-	seerr   *seerr.Client
+	seerr   seerrAPI
 	replace replace.Service
 	qbit    *qbit.Client
 	relay   *relay

@@ -361,6 +361,9 @@ func TestPickViewChunks(t *testing.T) {
 	if first.CustomID == second.CustomID || !strings.HasPrefix(second.CustomID, idPick+"tok:") {
 		t.Errorf("custom IDs %q, %q", first.CustomID, second.CustomID)
 	}
+	if !strings.Contains(*upd.Content, "Each menu is a separate pick") {
+		t.Errorf("prompt doesn't say menus are separate:\n%s", *upd.Content)
+	}
 }
 
 func TestLines(t *testing.T) {

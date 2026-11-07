@@ -30,13 +30,33 @@ type pendingReplace struct {
 // goes into the custom IDs of the flow's components. A restart forgets
 // them, and the admin presses Replace again.
 type pendingStore struct {
-	mu    sync.Mutex
-	flows map[string]*pendingReplace
-	now   func() time.Time
+	mu      sync.Mutex
+	flows   map[string]*pendingReplace
+	running map[int]bool // issues with a replacement in progress
+	now     func() time.Time
 }
 
 func newPendingStore() *pendingStore {
-	return &pendingStore{flows: map[string]*pendingReplace{}, now: time.Now}
+	return &pendingStore{flows: map[string]*pendingReplace{}, running: map[int]bool{}, now: time.Now}
+}
+
+// start marks a replacement for an issue as running. It returns false if
+// one already is, so two confirmed flows can't act on the same files.
+func (s *pendingStore) start(issueID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running[issueID] {
+		return false
+	}
+	s.running[issueID] = true
+	return true
+}
+
+// finish marks the issue's replacement as done.
+func (s *pendingStore) finish(issueID int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.running, issueID)
 }
 
 // put stores a flow and returns its token.
