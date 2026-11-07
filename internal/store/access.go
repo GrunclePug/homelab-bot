@@ -214,21 +214,32 @@ func (s *Store) Decide(ctx context.Context, id int, status, decidedBy, plex stri
 	return nil
 }
 
-// Share returns a member's newest approved request with a Plex share that
-// hasn't been removed. ok is false if there is none.
-func (s *Store) Share(ctx context.Context, userID string) (AccessRequest, bool, error) {
-	r, err := scanRequest(s.db.QueryRowContext(ctx,
-		"SELECT "+requestColumns+` FROM access_request
-		 WHERE user_id = ? AND status = ? AND plex_account != '' AND share_state NOT IN (?, ?)
+// Shares lists a member's approved requests whose Plex access is tracked
+// and not settled for good, newest first. A member can have more than
+// one: an earlier account, and a different one approved since.
+func (s *Store) Shares(ctx context.Context, userID string) ([]AccessRequest, error) {
+	return s.listRequests(ctx, "plex shares of member "+userID,
+		` WHERE user_id = ? AND status = ? AND plex_account != '' AND share_state NOT IN (?, ?) ORDER BY id DESC`,
+		userID, StatusApproved, ShareRemoved, ShareSuperseded)
+}
+
+// NewerApproval returns the member's newest request approved after
+// request id that may cover the same Plex access: one for plexAccount, or
+// one whose account had access already but isn't known. ok is false if
+// there is none.
+func (s *Store) NewerApproval(ctx context.Context, userID string, id int, plexAccount string) (newer int, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT id FROM access_request
+		 WHERE user_id = ? AND id > ? AND status = ? AND (plex_account = ? OR (plex_account = '' AND plex_already = 1))
 		 ORDER BY id DESC LIMIT 1`,
-		userID, StatusApproved, ShareRemoved, ShareSuperseded))
+		userID, id, StatusApproved, plexAccount).Scan(&newer)
 	if errors.Is(err, sql.ErrNoRows) {
-		return AccessRequest{}, false, nil
+		return 0, false, nil
 	}
 	if err != nil {
-		return AccessRequest{}, false, fmt.Errorf("get plex share of member %s: %w", userID, err)
+		return 0, false, fmt.Errorf("check newer approvals of member %s: %w", userID, err)
 	}
-	return r, true, nil
+	return newer, true, nil
 }
 
 // SetShareState moves a request's share from one of the states in from to
@@ -293,13 +304,13 @@ func (s *Store) OlderShares(ctx context.Context, userID string, newer int) ([]Ac
 		userID, newer, StatusApproved, ShareRemoved, ShareSuperseded)
 }
 
-// ActiveShares lists the approved requests whose Plex access is tracked
-// and nobody has been asked about, for the startup check of members who
-// left or lost the role while the bot was down.
-func (s *Store) ActiveShares(ctx context.Context) ([]AccessRequest, error) {
-	return s.listRequests(ctx, "active plex shares",
-		` WHERE status = ? AND plex_account != '' AND share_state = ? ORDER BY id`,
-		StatusApproved, ShareActive)
+// TrackedShares lists the approved requests whose Plex access is tracked
+// and not settled for good, for the startup check of members who left,
+// lost the role or got it back while the bot was down.
+func (s *Store) TrackedShares(ctx context.Context) ([]AccessRequest, error) {
+	return s.listRequests(ctx, "tracked plex shares",
+		` WHERE status = ? AND plex_account != '' AND share_state IN (?, ?, ?) ORDER BY id`,
+		StatusApproved, ShareActive, ShareAsked, ShareKept)
 }
 
 func (s *Store) listRequests(ctx context.Context, what, where string, args ...any) ([]AccessRequest, error) {

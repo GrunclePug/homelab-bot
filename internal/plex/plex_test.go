@@ -10,6 +10,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -150,11 +151,16 @@ type plexTV struct {
 	failLists       bool
 	failDelete      int           // status for DELETEs, if set
 	slowDelete      time.Duration // DELETEs wait this long first
+	mu              sync.Mutex
 	requests        []string
 }
 
 func (p *plexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// A client that timed out sends its next request while a slow one
+	// is still being answered.
+	p.mu.Lock()
 	p.requests = append(p.requests, r.Method+" "+r.URL.RequestURI())
+	p.mu.Unlock()
 	if p.failLists && r.Method == http.MethodGet && r.URL.Path != "/api/servers/abc123" {
 		http.Error(w, "boom", http.StatusInternalServerError)
 		return
@@ -164,8 +170,13 @@ func (p *plexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodDelete && p.failDelete != 0 {
 		w.WriteHeader(p.failDelete)
-		// plex.tv's message might repeat the invite's ID, an address here.
-		io.WriteString(w, `<Response code="503" status="Busy with `+path.Base(r.URL.Path)+`"/>`)
+		// plex.tv's message might repeat the invite's ID, an address here,
+		// or the account's address and username.
+		echo := path.Base(r.URL.Path)
+		if echo == "71" {
+			echo = "Friend@Example.com (Friendly)"
+		}
+		io.WriteString(w, `<Response code="503" status="Busy with `+echo+`"/>`)
 		return
 	}
 	switch r.Method + " " + r.URL.Path {
@@ -291,13 +302,17 @@ func TestRemoveAccess(t *testing.T) {
 		{shares: acceptedShare, invites: pendingInvite, slowDelete: 300 * time.Millisecond},
 	} {
 		srv := httptest.NewServer(p)
-		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-		_, err := NewClient(srv.URL, "tok", "abc123").RemoveAccess(ctx, accountEmail("new@example.com"))
-		cancel()
-		srv.Close()
-		if err == nil || strings.Contains(err.Error(), "example.com") || strings.Contains(err.Error(), "/api/") {
-			t.Errorf("failed cancel: err = %v", err)
+		c := NewClient(srv.URL, "tok", "abc123")
+		for _, acct := range []Account{accountEmail("new@example.com"), "id:6001"} {
+			ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+			_, err := c.RemoveAccess(ctx, acct)
+			cancel()
+			if err == nil || strings.Contains(strings.ToLower(err.Error()), "example.com") ||
+				strings.Contains(err.Error(), "Friendly") || strings.Contains(err.Error(), "/api/") {
+				t.Errorf("failed removal of %s: err = %v", acct, err)
+			}
 		}
+		srv.Close()
 	}
 
 	p := &plexTV{failLists: true}

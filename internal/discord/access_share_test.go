@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/disgoorg/disgo/discord"
@@ -397,5 +399,205 @@ func TestRemoveNothingLeft(t *testing.T) {
 	if err != nil || !strings.HasPrefix(text, "Couldn't find a share or invite for them on plex.tv") || len(fp.removed) != 0 ||
 		shareState(t, st) != store.ShareRemoved || !strings.HasPrefix(field(q.Embeds[0], fieldStatus), "Not found on plex.tv") {
 		t.Errorf("remove = %q, %v; removed %v, state %q, status %q", text, err, fp.removed, shareState(t, st), field(q.Embeds[0], fieldStatus))
+	}
+}
+
+// request files and approves a request for member with account plex, and
+// returns its ID.
+func request(t *testing.T, a *access, plexAccount string) int {
+	t.Helper()
+	ctx := context.Background()
+	if text, err := a.submit(ctx, member, "Ann", plexAccount, ""); err != nil || text != textRequestSent {
+		t.Fatalf("submit = %q, %v", text, err)
+	}
+	id := lastRequest(t, a)
+	if text, err := a.approve(ctx, id, "Bob"); err != nil || !strings.HasPrefix(text, "Approved.") {
+		t.Fatalf("approve %d = %q, %v", id, text, err)
+	}
+	return id
+}
+
+// lastRequest is the ID of the newest request.
+func lastRequest(t *testing.T, a *access) int {
+	t.Helper()
+	for id := 50; id > 0; id-- {
+		if _, ok, _ := a.store.Request(context.Background(), id); ok {
+			return id
+		}
+	}
+	t.Fatal("no requests")
+	return 0
+}
+
+// Missed while the bot was down: a kept member who left, an asked member
+// who got the role back, and an asked member whose card was deleted.
+func TestCheckMissedEveryState(t *testing.T) {
+	ctx := context.Background()
+
+	a, fd, _, st := newTestAccess(t)
+	approved(t, a, fd)
+	roleChange(t, a, []snowflake.ID{mediaRole}, nil)
+	if _, err := a.keepShare(ctx, 1, "Bob", *questions(fd)[0]); err != nil {
+		t.Fatal(err)
+	}
+	fd.gone[member] = true
+	if err := a.checkMissed(ctx); err != nil || shareState(t, st) != store.ShareAsked || len(questions(fd)) != 2 {
+		t.Errorf("kept, then left: %v, state %q, %d questions", err, shareState(t, st), len(questions(fd)))
+	}
+
+	a, fd, _, st = newTestAccess(t)
+	approved(t, a, fd)
+	roleChange(t, a, []snowflake.ID{mediaRole}, nil)
+	q := questions(fd)[0]
+	fd.roles[member] = []snowflake.ID{mediaRole}
+	if err := a.checkMissed(ctx); err != nil || shareState(t, st) != store.ShareActive || len(q.Components) != 0 {
+		t.Errorf("asked, then role back: %v, state %q, buttons %v", err, shareState(t, st), customIDs(q.Components))
+	}
+
+	a, fd, _, _ = newTestAccess(t)
+	approved(t, a, fd)
+	roleChange(t, a, []snowflake.ID{mediaRole}, nil)
+	fd.roles[member] = nil
+	q = questions(fd)[0]
+	fd.DeleteMessage(q.ChannelID, q.ID)
+	if err := a.checkMissed(ctx); err != nil || len(questions(fd)) != 1 || questions(fd)[0].ID == q.ID {
+		t.Errorf("card deleted: %v, %d questions", err, len(questions(fd)))
+	}
+}
+
+// Approved again for a different account: the first account stays
+// tracked, and each is asked about and removed on its own.
+func TestReapproveOtherAccount(t *testing.T) {
+	ctx := context.Background()
+	a, fd, fp, st := newTestAccess(t)
+	approved(t, a, fd) // request 1: ann@example.com, account 100
+	roleChange(t, a, []snowflake.ID{mediaRole}, nil)
+	first := questions(fd)[0]
+	second := request(t, a, "ann.two@example.com") // account 101
+	r1, _, _ := st.Request(ctx, 1)
+	r2, _, _ := st.Request(ctx, second)
+	if r1.ShareState != store.ShareActive || r1.PlexAccount != "id:100" || r2.PlexAccount != "id:101" || len(first.Components) != 0 {
+		t.Fatalf("request 1 %q %q, request %d %q, old buttons %v", r1.ShareState, r1.PlexAccount, second, r2.PlexAccount, customIDs(first.Components))
+	}
+	if err := a.memberLeft(ctx, member); err != nil || len(questions(fd)) != 3 {
+		t.Fatalf("leave: %v, %d questions", err, len(questions(fd)))
+	}
+	qs := questions(fd)
+	for _, q := range qs[1:] {
+		id := 1
+		if strings.Contains(customIDs(q.Components)[0], ":"+strconv.Itoa(second)) {
+			id = second
+		}
+		if text, err := a.removeShare(ctx, id, "Bob", *q); err != nil || text != "Plex access removed." {
+			t.Errorf("remove %d = %q, %v", id, text, err)
+		}
+	}
+	slices.Sort(fp.removed)
+	if !slices.Equal(fp.removed, []string{"/api/invites/requested/100", "/api/invites/requested/101"}) {
+		t.Errorf("removed %v", fp.removed)
+	}
+}
+
+// Approved again, but plex.tv only says the account already had access
+// without listing it: it may be the same access, so an old card that
+// slipped through must not remove it.
+func TestReapproveUnknownBlocksOldCard(t *testing.T) {
+	ctx := context.Background()
+	a, fd, fp, st := newTestAccess(t)
+	approved(t, a, fd)
+	roleChange(t, a, []snowflake.ID{mediaRole}, nil)
+	old := questions(fd)[0]
+	fp.hideLists = true
+	second := request(t, a, "ann@example.com")
+	if r, _, _ := st.Request(ctx, second); r.PlexAccount != "" || !r.PlexAlready {
+		t.Fatalf("second approval: account %q, already %v", r.PlexAccount, r.PlexAlready)
+	}
+	if ok, _ := st.SetShareState(ctx, 1, store.ShareAsked, store.ShareActive); !ok {
+		t.Fatal("reset state")
+	}
+	text, err := a.removeShare(ctx, 1, "Cy", *old)
+	if err != nil || !strings.HasPrefix(text, "This card is out of date") || len(fp.removed) != 0 {
+		t.Errorf("remove = %q, %v, removed %v", text, err, fp.removed)
+	}
+}
+
+// Remove access does nothing for a member who has the media role again.
+func TestRemoveRefusedWithRole(t *testing.T) {
+	ctx := context.Background()
+	a, fd, fp, st := newTestAccess(t)
+	approved(t, a, fd)
+	roleChange(t, a, []snowflake.ID{mediaRole}, nil)
+	q := questions(fd)[0]
+	a.currentRoles = func(snowflake.ID) ([]snowflake.ID, bool) { return []snowflake.ID{mediaRole}, true }
+	text, err := a.removeShare(ctx, 1, "Bob", *q)
+	if err != nil || !strings.HasPrefix(text, "They have the media role again") || len(fp.removed) != 0 ||
+		shareState(t, st) != store.ShareActive || len(q.Components) != 0 {
+		t.Errorf("remove = %q, %v; removed %v, state %q", text, err, fp.removed, shareState(t, st))
+	}
+}
+
+// A role-add event handled after a newer role-loss one doesn't retire the
+// newer card.
+func TestStaleRoleBackIgnored(t *testing.T) {
+	a, fd, _, st := newTestAccess(t)
+	approved(t, a, fd)
+	a.currentRoles = func(snowflake.ID) ([]snowflake.ID, bool) { return nil, true }
+	roleChange(t, a, []snowflake.ID{mediaRole}, nil)
+	q := questions(fd)[0]
+	roleChange(t, a, nil, []snowflake.ID{mediaRole}) // the older event
+	if shareState(t, st) != store.ShareAsked || len(q.Components) == 0 {
+		t.Errorf("stale role-back acted: state %q, buttons %v", shareState(t, st), customIDs(q.Components))
+	}
+}
+
+// A restart in the middle of an approval still retires older cards.
+func TestRecoverRetiresOlderCards(t *testing.T) {
+	ctx := context.Background()
+	a, fd, _, st := newTestAccess(t)
+	approved(t, a, fd)
+	roleChange(t, a, []snowflake.ID{mediaRole}, nil)
+	old := questions(fd)[0]
+	if _, err := a.submit(ctx, member, "Ann", "ann@example.com", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Stopped after the invite of request 2.
+	ok, _ := st.Claim(ctx, 2, store.StatusPending, store.StatusProcessing, "Bob")
+	if !ok || st.MarkInvited(ctx, 2, "id:100", true) != nil {
+		t.Fatal("set up interrupted approval")
+	}
+	if err := a.recoverInterrupted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r1, _, _ := st.Request(ctx, 1); r1.ShareState != store.ShareSuperseded || len(old.Components) != 0 {
+		t.Errorf("request 1 %q, old buttons %v", r1.ShareState, customIDs(old.Components))
+	}
+}
+
+// Member events arriving together post one card, not several, even when
+// each finds the card deleted and would post it again.
+func TestShareEventsConcurrent(t *testing.T) {
+	ctx := context.Background()
+	for range 100 {
+		a, fd, _, _ := newTestAccess(t)
+		approved(t, a, fd)
+		if err := a.memberLeft(ctx, member); err != nil {
+			t.Fatal(err)
+		}
+		q := questions(fd)[0]
+		fd.DeleteMessage(q.ChannelID, q.ID)
+		var wg sync.WaitGroup
+		for i := range 6 {
+			wg.Go(func() {
+				if i%2 == 0 {
+					a.memberLeft(ctx, member)
+				} else {
+					a.memberChanged(ctx, member, []snowflake.ID{mediaRole}, true, nil)
+				}
+			})
+		}
+		wg.Wait()
+		if n := len(questions(fd)); n != 1 {
+			t.Fatalf("%d cards, want 1", n)
+		}
 	}
 }

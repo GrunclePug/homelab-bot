@@ -290,29 +290,29 @@ func (c *Client) RemoveAccess(ctx context.Context, acct Account) (removed bool, 
 	}
 	shares, err := c.shares(ctx)
 	if err != nil {
-		return false, fmt.Errorf("plex: remove access: %w", err)
+		return false, fmt.Errorf("plex: remove access: %s", brief(err))
 	}
 	for _, s := range shares {
 		// Someone invited by address and since signed up matches by it.
 		if acct.matches(strconv.Itoa(s.UserID), s.Email) {
-			return c.remove(ctx, c.sharesPath()+"/"+strconv.Itoa(s.ID), "")
+			return c.remove(ctx, c.sharesPath()+"/"+strconv.Itoa(s.ID), s.Email, s.Username)
 		}
 	}
 	srv, err := c.server(ctx)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("plex: remove access: %s", brief(err))
 	}
 	invites, err := c.invites(ctx, srv.Name)
 	if err != nil {
-		return false, fmt.Errorf("plex: remove access: %w", err)
+		return false, fmt.Errorf("plex: remove access: %s", brief(err))
 	}
 	for _, inv := range invites {
 		if acct.matches(inv.ID, inv.Email) || acct.matches("", inv.ID) {
 			// As python-plexapi's cancelInvite: the invite's own flags.
 			q := url.Values{"friend": {orZero(inv.Friend)}, "home": {orZero(inv.Home)}, "server": {orZero(inv.Server)}}
 			// The ID may be the invitee's email address, so it stays out
-			// of any error.
-			return c.remove(ctx, "/api/invites/requested/"+url.PathEscape(inv.ID)+"?"+q.Encode(), inv.ID)
+			// of any error, as do the address and username themselves.
+			return c.remove(ctx, "/api/invites/requested/"+url.PathEscape(inv.ID)+"?"+q.Encode(), inv.ID, inv.Email, inv.Username)
 		}
 	}
 	return false, nil
@@ -326,21 +326,38 @@ func orZero(s string) string {
 }
 
 // remove sends a DELETE; something already gone counts as not removed.
-// Its errors name neither the path nor secret, which may appear in it.
-func (c *Client) remove(ctx context.Context, path, secret string) (bool, error) {
+// Its errors name neither the path nor any of secrets: the account's
+// address, username or ID, which plex.tv's message might repeat.
+func (c *Client) remove(ctx context.Context, path string, secrets ...string) (bool, error) {
 	_, err := c.do(ctx, http.MethodDelete, path, nil)
 	var se *statusError
 	switch {
 	case errors.As(err, &se) && se.code == http.StatusNotFound:
 		return false, nil
 	case errors.As(err, &se):
-		return false, fmt.Errorf("plex: remove access: plex.tv answered %s: %s", se.status, redact(se.text, secret))
-	case errors.Is(err, context.DeadlineExceeded) || isTimeout(err):
-		return false, errors.New("plex: remove access: plex.tv timed out")
+		text := se.text
+		for _, s := range secrets {
+			text = redact(text, s)
+		}
+		return false, fmt.Errorf("plex: remove access: plex.tv answered %s: %s", se.status, text)
 	case err != nil:
-		return false, errors.New("plex: remove access: plex.tv unreachable")
+		return false, fmt.Errorf("plex: remove access: %s", brief(err))
 	}
 	return true, nil
+}
+
+// brief describes a failed plex.tv request without its URL, which names
+// the server and, for some invites, the invitee's address.
+func brief(err error) string {
+	var se *statusError
+	switch {
+	case errors.As(err, &se):
+		return "plex.tv answered " + se.status
+	case errors.Is(err, context.DeadlineExceeded) || isTimeout(err):
+		return "plex.tv timed out"
+	default:
+		return "plex.tv unreachable"
+	}
 }
 
 func isTimeout(err error) bool {

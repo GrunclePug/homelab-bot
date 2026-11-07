@@ -93,6 +93,7 @@ type fakePlexTV struct {
 	failInvite bool
 	failRemove bool
 	unlisted   bool // invites don't show up in plex.tv's lists
+	hideLists  bool // plex.tv's lists come back empty
 	echo       bool // the failure message repeats the invited address
 }
 
@@ -141,12 +142,18 @@ func (f *fakePlexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "GET /api/servers/srv/shared_servers":
 		io.WriteString(w, "<MediaContainer>")
 		for email, id := range f.accepted {
+			if f.hideLists {
+				break
+			}
 			fmt.Fprintf(w, `<SharedServer id="%d" userID="%d" email="%s"/>`, id+5000, id, email)
 		}
 		io.WriteString(w, "</MediaContainer>")
 	case "GET /api/invites/requested":
 		io.WriteString(w, "<MediaContainer>")
 		for email, id := range f.pending {
+			if f.hideLists {
+				break
+			}
 			fmt.Fprintf(w, `<Invite id="%d" email="%s" friend="0" home="0" server="1"><Server name="media"/></Invite>`, id, email)
 		}
 		io.WriteString(w, "</MediaContainer>")

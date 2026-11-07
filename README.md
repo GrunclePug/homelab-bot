@@ -121,12 +121,12 @@ Seerr needs no setup from the bot if its Plex sign-in for new users is enabled: 
 
 Each approval records who its Plex access is for: the member's Plex account ID, or, for an invite to an email address with no Plex account yet, a SHA-256 of the lowercased address, never the address itself. When that member leaves the server, or loses the media role, the bot posts a **Remove Plex access?** card to `DISCORD_ACCESS_CHANNEL_ID` with **Remove access** and **Keep** buttons for approvers. Nothing changes in Plex until an approver presses one.
 
-* **Remove access** deletes their share if they accepted the invite, or cancels the invite if they haven't. Cancelling cancels the whole invite, so if it also covered another of your servers, that goes too. If plex.tv lists neither, the card says so and asks you to check Manage Library Access in Plex.
+* **Remove access** deletes their share if they accepted the invite, or cancels the invite if they haven't. Cancelling cancels the whole invite, so if it also covered another of your servers, that goes too. If plex.tv lists neither, the card says so and asks you to check Manage Library Access in Plex. It does nothing if the member has the media role again, or was approved again since for what may be the same access.
 * **Keep** leaves their access. They are asked about again if they leave later, or lose the media role after getting it back.
 * A card is retired, with its buttons taken away, when the member gets the media role back or is approved again. One deleted by hand is posted again at the next leave or role change.
-* At startup, the bot checks the members it tracks and asks about any who left or lost the media role while it was down.
+* At startup, the bot catches up on what happened to the members it tracks while it was down: it asks about those who left or lost the media role, retires the cards of those who got it back, and posts deleted cards again.
 
-A member without the media role can request access again at any time. If they are approved for the account they had before, the new approval takes over tracking it. If plex.tv says an account already has access and it isn't one this member was approved for, the bot onboards them but doesn't track it, since it may be someone else's; the request post says so.
+A member without the media role can request access again at any time. If they are approved for the account they had before, the new approval takes over tracking it; if for a different account, both stay tracked and each gets its own card. If plex.tv says an account already has access and it isn't one this member was approved for, the bot onboards them but doesn't track it, since it may be someone else's; the request post says so.
 
 Members approved before the bot recorded this, or added to Plex some other way, aren't tracked: remove them by hand under Manage Library Access in Plex. Removal goes through plex.tv's sharing and invite APIs, which Plex doesn't document.
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
@@ -63,13 +64,14 @@ type accessStore interface {
 	Claim(ctx context.Context, id int, from, to, by string) (bool, error)
 	MarkInvited(ctx context.Context, id int, plexAccount string, already bool) error
 	Decide(ctx context.Context, id int, status, decidedBy, plex string) error
-	Share(ctx context.Context, userID string) (store.AccessRequest, bool, error)
+	Shares(ctx context.Context, userID string) ([]store.AccessRequest, error)
+	NewerApproval(ctx context.Context, userID string, id int, plexAccount string) (int, bool, error)
 	SetShareState(ctx context.Context, id int, to string, from ...string) (bool, error)
 	Removing(ctx context.Context) ([]store.AccessRequest, error)
 	SetSharePost(ctx context.Context, id int, channelID, messageID string) error
 	HadAccount(ctx context.Context, userID, plexAccount string, before int) (bool, error)
 	OlderShares(ctx context.Context, userID string, newer int) ([]store.AccessRequest, error)
-	ActiveShares(ctx context.Context) ([]store.AccessRequest, error)
+	TrackedShares(ctx context.Context) ([]store.AccessRequest, error)
 }
 
 // access runs access requests: members ask, approvers approve or deny,
@@ -87,6 +89,10 @@ type access struct {
 	// currentRoles returns a member's roles as the bot last saw them, if
 	// it has seen them; nil to skip that check.
 	currentRoles func(snowflake.ID) ([]snowflake.ID, bool)
+
+	// shareMu serialises the Plex share cards' state changes: member
+	// events and clicks run concurrently.
+	shareMu sync.Mutex
 }
 
 // Texts members see.
@@ -234,10 +240,6 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 		a.log.Error("record plex invite", "request", id, "err", err)
 	}
 	r.PlexAccount, r.PlexAlready = string(acct), already
-	// Cards about their earlier approvals no longer apply.
-	if err := a.retireOlder(fin, *r); err != nil {
-		a.log.Error("retire earlier plex share cards", "request", id, "err", err)
-	}
 	return a.onboard(fin, *r, userID, approver, notes...)
 }
 
@@ -266,6 +268,11 @@ func (a *access) onboard(ctx context.Context, r store.AccessRequest, userID snow
 
 	if err := a.store.Decide(ctx, id, store.StatusApproved, approver, maskAccount(r.Plex)); err != nil {
 		return "", err
+	}
+	// Now that this approval counts, cards about earlier ones no longer
+	// apply. This runs after a restart too, through recoverInterrupted.
+	if err := a.retireOlder(ctx, r); err != nil {
+		a.log.Error("retire earlier plex share cards", "request", id, "err", err)
 	}
 	body := strings.Join(steps, "\n")
 	err := a.updatePost(ctx, r, func(e discord.Embed) discord.Embed {
