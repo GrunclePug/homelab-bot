@@ -15,6 +15,7 @@ const (
 	StatusProcessing = "processing" // an approver's click is being acted on
 	StatusApproved   = "approved"
 	StatusDenied     = "denied"
+	StatusFailed     = "failed" // the Plex invite failed; the member may ask again
 )
 
 // ErrOpenRequest means the member already has an open access request.
@@ -129,7 +130,7 @@ func (s *Store) Claim(ctx context.Context, id int, from, to string) (bool, error
 	return n == 1, nil
 }
 
-// Decide closes a request as approved or denied, and replaces the Plex
+// Decide closes a request as approved, denied or failed, and replaces the Plex
 // account with plex, normally a masked form: it isn't needed any more.
 func (s *Store) Decide(ctx context.Context, id int, status, decidedBy, plex string) error {
 	_, err := s.db.ExecContext(ctx,

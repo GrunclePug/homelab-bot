@@ -154,8 +154,9 @@ func (a *access) submit(ctx context.Context, userID snowflake.ID, userName, plex
 }
 
 // approve onboards the member: Plex invite, media role, welcome DM. If the
-// invite fails nothing else happens and the request stays pending, so it
-// can be tried again. It returns the text to show the approver.
+// invite fails nothing else happens: the request is closed as failed and
+// the member is asked to check their Plex account and request again. It
+// returns the text to show the approver.
 func (a *access) approve(ctx context.Context, id int, approver string) (string, error) {
 	r, err := a.claim(ctx, id)
 	if err != nil || r == nil {
@@ -168,11 +169,7 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 
 	if err := a.plex.Invite(ctx, r.Plex); err != nil {
 		a.log.Warn("plex invite failed", "request", id, "err", err)
-		note := fmt.Sprintf("%s tried to approve: the Plex invite failed (%v). Check the Plex account and try again.", approver, err)
-		return "The Plex invite failed, so nothing else was done and the request is still open:\n" + err.Error(),
-			errors.Join(a.release(ctx, id), a.updatePost(ctx, *r, func(e discord.Embed) discord.Embed {
-				return setField(e, "Last attempt", note, false)
-			}, true))
+		return a.inviteFailed(ctx, *r, userID, approver, err)
 	}
 
 	steps := []string{"Plex invite sent to " + code(maskAccount(r.Plex))}
@@ -199,6 +196,25 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 		return setField(e, "Onboarding", body, false)
 	}, false)
 	return "Approved.\n" + body, err
+}
+
+// inviteFailed closes a request whose Plex invite failed, so the member
+// isn't stuck with an open request, and asks them to try again.
+func (a *access) inviteFailed(ctx context.Context, r store.AccessRequest, userID snowflake.ID, approver string, inviteErr error) (string, error) {
+	if err := a.store.Decide(ctx, r.ID, store.StatusFailed, approver, maskAccount(r.Plex)); err != nil {
+		return "", err
+	}
+	dmNote := "They were asked by DM to check their Plex account and request again."
+	if a.dm(ctx, userID, "The Plex invite for your media server access request didn't go through. "+
+		"Check your Plex email address or username, then press Request access again.") != nil {
+		dmNote = "Couldn't DM them, they may have DMs turned off. Ask them to check their Plex account and request again."
+	}
+	err := a.updatePost(ctx, r, func(e discord.Embed) discord.Embed {
+		e.Color = colorResolved
+		e = setField(e, fieldStatus, "Invite failed (approved by "+approver+")", true)
+		return setField(e, "Problem", truncate(inviteErr.Error(), maxFieldValue)+"\n"+dmNote, false)
+	}, false)
+	return "The Plex invite failed, so nothing else was done and the request is closed:\n" + inviteErr.Error() + "\n" + dmNote, err
 }
 
 // deny closes the request and tells the member. It returns the text to

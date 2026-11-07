@@ -235,24 +235,37 @@ func TestAccessApproveInviteFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, "Unknown user") || !strings.Contains(text, "still open") {
+	if !strings.Contains(text, "Unknown user") || !strings.Contains(text, "request is closed") {
 		t.Errorf("reply = %q", text)
 	}
-	if len(fd.roles[member]) != 0 || len(fd.dms(member)) != 0 {
-		t.Error("role or DM given although the invite failed")
+	if len(fd.roles[member]) != 0 {
+		t.Error("role given although the invite failed")
+	}
+	if dms := fd.dms(member); len(dms) != 1 || !strings.Contains(dms[0], "press Request access again") {
+		t.Errorf("DMs = %q", dms)
 	}
 	m := fd.msgs[post.ID]
-	if !strings.Contains(field(m.Embeds[0], "Last attempt"), "Bob tried to approve") || len(customIDs(m.Components)) != 2 {
-		t.Errorf("post after failed invite: %+v", m.Embeds[0].Fields)
+	e := m.Embeds[0]
+	if field(e, fieldStatus) != "Invite failed (approved by Bob)" || !strings.Contains(field(e, "Problem"), "Unknown user") || len(m.Components) != 0 {
+		t.Errorf("post after failed invite: %+v, components %d", e.Fields, len(m.Components))
 	}
-	if r, _, _ := st.Request(ctx, 1); r.Status != store.StatusPending {
-		t.Errorf("status = %q, want pending", r.Status)
+	if r, _, _ := st.Request(ctx, 1); r.Status != store.StatusFailed {
+		t.Errorf("status = %q, want failed", r.Status)
+	}
+	if text, _ := a.approve(ctx, 1, "Bob"); text != textHandled {
+		t.Errorf("approve after failure = %q", text)
 	}
 
-	// Fixed on Plex's side: the retry goes through.
+	// The member isn't stuck: they can ask again, and this time it works.
+	if why, _ := a.canRequest(ctx, member, false); why != "" {
+		t.Fatalf("after a failed invite: %q", why)
+	}
 	fp.failInvite = false
-	if text, err := a.approve(ctx, 1, "Bob"); err != nil || !strings.HasPrefix(text, "Approved.") {
-		t.Errorf("retry = %q, %v", text, err)
+	if text, err := a.submit(ctx, member, "Ann", "ann@example.com", ""); err != nil || text != textRequestSent {
+		t.Fatalf("new request = %q, %v", text, err)
+	}
+	if text, err := a.approve(ctx, 2, "Bob"); err != nil || !strings.HasPrefix(text, "Approved.") {
+		t.Errorf("second approval = %q, %v", text, err)
 	}
 }
 
@@ -332,13 +345,16 @@ func TestAccessNoEmailLeaks(t *testing.T) {
 		a, fd, fp, st := newTestAccess(t)
 		submitted(t, a, fd)
 		var replies []string
+		last := 1
 		if failFirst {
 			fp.failInvite = true
 			text, _ := a.approve(ctx, 1, "Bob")
 			replies = append(replies, text)
 			fp.failInvite = false
+			submitted(t, a, fd)
+			last = 2
 		}
-		text, _ := a.approve(ctx, 1, "Bob")
+		text, _ := a.approve(ctx, last, "Bob")
 		replies = append(replies, text)
 
 		for _, m := range fd.msgs {
@@ -352,8 +368,10 @@ func TestAccessNoEmailLeaks(t *testing.T) {
 				t.Errorf("reply shows the address: %q", r)
 			}
 		}
-		if r, _, _ := st.Request(ctx, 1); strings.Contains(r.Plex, email) {
-			t.Errorf("stored address after approval: %q", r.Plex)
+		for id := 1; id <= last; id++ {
+			if r, _, _ := st.Request(ctx, id); strings.Contains(r.Plex, email) {
+				t.Errorf("request %d keeps the address: %q", id, r.Plex)
+			}
 		}
 		if !slices.Equal(fp.invited, []string{email}) {
 			t.Errorf("invited = %v, want the full address sent to Plex", fp.invited)

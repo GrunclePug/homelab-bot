@@ -105,7 +105,7 @@ A member presses **Request access** and fills in their Plex email or username, p
 
 Approving a request:
 
-1. Invites the Plex account to every library on the server. If the invite fails, nothing else happens and the request stays open, so it can be approved again once the account is fixed.
+1. Invites the Plex account to every library on the server. If the invite fails, nothing else happens: the request is closed, the post shows the error, and the member is asked by DM to check their Plex account and request again.
 2. Gives the member the media role.
 3. DMs the member how to accept the invite and sign in to Seerr.
 
