@@ -30,6 +30,8 @@ type Monitor struct {
 	Status int     // the latest heartbeat's status
 	Seen   bool    // false if it has no heartbeats yet
 	Uptime float64 // over the last 24 hours, from 0 to 1
+	// UptimeKnown is false if Kuma gave no 24-hour uptime for it.
+	UptimeKnown bool
 }
 
 // Group is a section of the status page.
@@ -98,7 +100,8 @@ func (c *Client) Groups(ctx context.Context) ([]Group, error) {
 		grp := Group{Name: g.Name}
 		for _, m := range g.Monitors {
 			id := strconv.Itoa(m.ID)
-			mon := Monitor{Name: m.Name, Uptime: beats.Uptime[id+"_24"]}
+			mon := Monitor{Name: m.Name}
+			mon.Uptime, mon.UptimeKnown = beats.Uptime[id+"_24"]
 			// Oldest first, so the last one is the latest.
 			if hb := beats.Heartbeats[id]; len(hb) > 0 {
 				mon.Status, mon.Seen = hb[len(hb)-1].Status, true

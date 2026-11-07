@@ -38,7 +38,7 @@ func TestGroups(t *testing.T) {
 			io.WriteString(w, `{"config":{"slug":"home","title":"Home"},"incidents":[],"maintenanceList":[],
 				"publicGroupList":[
 					{"id":1,"name":"Media","weight":1,"monitorList":[{"id":3,"name":"Plex","sendUrl":0,"type":"http"},{"id":4,"name":"Seerr","sendUrl":0,"type":"http"}]},
-					{"id":2,"name":"Network","weight":2,"monitorList":[{"id":7,"name":"DNS","sendUrl":0,"type":"dns"}]}]}`)
+					{"id":2,"name":"Network","weight":2,"monitorList":[{"id":7,"name":"DNS","sendUrl":0,"type":"dns"},{"id":8,"name":"New","sendUrl":0,"type":"dns"}]}]}`)
 		case "/api/status-page/heartbeat/home":
 			io.WriteString(w, `{"heartbeatList":{
 					"3":[{"status":0,"time":"2026-11-07 10:00:00","msg":"","ping":null},{"status":1,"time":"2026-11-07 10:01:00","msg":"","ping":20}],
@@ -58,8 +58,8 @@ func TestGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Group{
-		{"Media", []Monitor{{"Plex", Up, true, 0.9993}, {"Seerr", Down, true, 0.5}}},
-		{"Network", []Monitor{{"DNS", 0, false, 0}}},
+		{"Media", []Monitor{{"Plex", Up, true, 0.9993, true}, {"Seerr", Down, true, 0.5, true}}},
+		{"Network", []Monitor{{"DNS", 0, false, 0, true}, {"New", 0, false, 0, false}}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Groups =\n%+v\nwant\n%+v", got, want)

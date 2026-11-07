@@ -109,7 +109,7 @@ A member presses **Request access** and fills in their Plex email or username, p
 
 Approving a request:
 
-1. Invites the Plex account to every library on the server. If the server is already shared with that account, for example with a member who lost the media role and asked again, no invite is sent and the existing share is kept. If the invite fails, nothing else happens: the request is closed, the post shows the error, and the member is asked by DM to check their Plex account and request again.
+1. Invites the Plex account to every library on the server. If the server is already shared with that account, for example with a member who lost the media role and asked again, no invite is sent and the existing access is kept (see [Removing access](#removing-access) for when it is tracked). If the invite fails, nothing else happens: the request is closed, the post shows the error, and the member is asked by DM to check their Plex account and request again.
 2. Gives the member the media role.
 3. DMs the member how to accept the invite and sign in to Seerr.
 
@@ -119,7 +119,14 @@ Seerr needs no setup from the bot if its Plex sign-in for new users is enabled: 
 
 ### Removing access
 
-Each approval records who its Plex access is for: the member's Plex account ID, or, for an invite to an email address with no Plex account yet, a SHA-256 of the lowercased address, never the address itself. When that member leaves the server, or loses the media role, it posts a **Remove Plex access?** card to `DISCORD_ACCESS_CHANNEL_ID` with **Remove access** and **Keep** buttons for approvers. Nothing changes in Plex until an approver presses one. Remove access deletes their share if they accepted the invite, or cancels the invite if they haven't; Keep leaves it, and the member is asked about again if they leave later, or lose the media role after getting it back. Once removed, they can request access again.
+Each approval records who its Plex access is for: the member's Plex account ID, or, for an invite to an email address with no Plex account yet, a SHA-256 of the lowercased address, never the address itself. When that member leaves the server, or loses the media role, the bot posts a **Remove Plex access?** card to `DISCORD_ACCESS_CHANNEL_ID` with **Remove access** and **Keep** buttons for approvers. Nothing changes in Plex until an approver presses one.
+
+* **Remove access** deletes their share if they accepted the invite, or cancels the invite if they haven't. Cancelling cancels the whole invite, so if it also covered another of your servers, that goes too. If plex.tv lists neither, the card says so and asks you to check Manage Library Access in Plex.
+* **Keep** leaves their access. They are asked about again if they leave later, or lose the media role after getting it back.
+* A card is retired, with its buttons taken away, when the member gets the media role back or is approved again. One deleted by hand is posted again at the next leave or role change.
+* At startup, the bot checks the members it tracks and asks about any who left or lost the media role while it was down.
+
+A member without the media role can request access again at any time. If they are approved for the account they had before, the new approval takes over tracking it. If plex.tv says an account already has access and it isn't one this member was approved for, the bot onboards them but doesn't track it, since it may be someone else's; the request post says so.
 
 Members approved before the bot recorded this, or added to Plex some other way, aren't tracked: remove them by hand under Manage Library Access in Plex. Removal goes through plex.tv's sharing and invite APIs, which Plex doesn't document.
 
@@ -136,9 +143,9 @@ To find the settings, take `PLEX_TOKEN` from the owner account (Plex's support a
 * **qBittorrent**: download and upload speed, and whether it is firewalled or disconnected.
 * **Sonarr** and **Radarr**: items in the queue and their first health warning.
 * **Storage**: free space on the largest volume Sonarr sees (Radarr's if Sonarr is down).
-* **Uptime Kuma**: with `KUMA_STATUS_URL` set, one field per group on that status page, with how many monitors are up, which are down and the group's uptime over 24 hours. Create a status page in Kuma with the monitors you want on the card; the bot reads its public JSON, so it needs no Kuma credentials. Kuma caches that JSON for up to five minutes.
+* **Uptime Kuma**: with `KUMA_STATUS_URL` set, one field per group on that status page, with how many monitors are up, which are down and the group's average uptime over 24 hours (monitors Kuma has no figure for yet are left out). Up to 18 groups fit; the card says how many more there are. Create a status page in Kuma with the monitors you want on the card; the bot reads its public JSON, so it needs no Kuma credentials. Kuma caches that JSON for up to five minutes.
 
-Each source has 10 seconds to answer. One that doesn't, or fails, shows as red without naming hosts; the full error goes to the log. The colour of the card and its first line follow the worst field.
+If everything is down at once, the fields are shortened to keep the card within Discord's size limit. Each source has 10 seconds to answer. One that doesn't, or fails, shows as red without naming hosts; the full error goes to the log. The colour of the card and its first line follow the worst field.
 
 ## Seerr webhook
 

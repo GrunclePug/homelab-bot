@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
@@ -121,23 +122,35 @@ type part struct {
 	text  string
 }
 
-func (p part) field() discord.EmbedField {
+func (p part) field(maxName, maxValue int) discord.EmbedField {
 	return discord.EmbedField{
-		Name:   p.level.dot() + " " + p.name,
-		Value:  truncate(p.text, maxFieldValue),
+		Name:   truncate(p.level.dot()+" "+p.name, maxName),
+		Value:  truncate(p.text, maxValue),
 		Inline: new(true),
 	}
 }
 
+// Discord's limits for an embed, in characters: a field's name, and all
+// of its text.
+const (
+	maxFieldName  = 256
+	maxEmbedTotal = 6000
+)
+
 // unreachable describes a failed read without naming hosts.
 func unreachable(err error) string {
-	var se *arr.StatusError
+	var (
+		se *arr.StatusError
+		te interface{ Timeout() bool }
+	)
+	msg := err.Error()
 	switch {
 	case errors.As(err, &se):
 		return arr.Brief(err)
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &te) && te.Timeout()):
 		return "Timed out"
-	case strings.Contains(err.Error(), "API key rejected"):
+	// qBittorrent says so; Seerr's errors carry the HTTP status.
+	case strings.Contains(msg, "API key rejected"), strings.Contains(msg, "401 Unauthorized"), strings.Contains(msg, "403 Forbidden"):
 		return "API key rejected"
 	default:
 		return "Unreachable"
@@ -156,6 +169,8 @@ func shortVersion(v string) string {
 func plexPart(r report) part {
 	p := part{name: "Plex"}
 	switch {
+	case errors.Is(r.plexErr, plex.ErrServerNotFound):
+		p.level, p.text = levelDown, "Not on the owner's plex.tv account: check PLEX_SERVER_ID"
 	case r.plexErr != nil:
 		p.level, p.text = levelDown, "plex.tv: "+strings.ToLower(unreachable(r.plexErr))
 	case !r.plex.Online:
@@ -219,7 +234,7 @@ func qbitPart(r report) part {
 		return p
 	}
 	t := r.qbit
-	p.text = fmt.Sprintf("↓ %s/s  ↑ %s/s", qbit.Bytes(t.DLSpeed), qbit.Bytes(t.UPSpeed))
+	p.text = fmt.Sprintf("↓ %s/s  ↑ %s/s\n%s", qbit.Bytes(t.DLSpeed), qbit.Bytes(t.UPSpeed), shortVersion(t.Version))
 	switch t.Connection {
 	case "connected":
 	case "firewalled":
@@ -230,11 +245,11 @@ func qbitPart(r report) part {
 	return p
 }
 
-// storagePart shows the largest volume Sonarr or Radarr sees, which is
-// where the media lives.
+// storagePart shows the largest volume Sonarr sees, or Radarr if Sonarr
+// shows none, which is where the media lives.
 func storagePart(r report) (part, bool) {
 	disks := r.sonarr.Disks
-	if r.sonarrErr != nil {
+	if r.sonarrErr != nil || len(disks) == 0 {
 		disks = r.radarr.Disks
 	}
 	if len(disks) == 0 {
@@ -258,25 +273,29 @@ func storagePart(r report) (part, bool) {
 
 // kumaParts summarises each status page group: how many monitors are up,
 // which are not, and the group's average uptime over 24 hours.
-func kumaParts(r report) []part {
+// hidden is how many groups didn't fit on the card.
+func kumaParts(r report) (parts []part, hidden int) {
 	if !r.kumaOn {
-		return nil
+		return nil, 0
 	}
 	if r.kumaErr != nil {
-		return []part{{name: "Uptime Kuma", level: levelDown, text: "Couldn't read the status page: " + strings.ToLower(unreachable(r.kumaErr))}}
+		return []part{{name: "Uptime Kuma", level: levelDown, text: "Couldn't read the status page: " + strings.ToLower(unreachable(r.kumaErr))}}, 0
 	}
 	var out []part
 	for i, g := range r.kuma {
 		if i == maxKumaGroups {
-			out[len(out)-1].text += fmt.Sprintf("\n%d more groups on the status page", len(r.kuma)-i)
+			hidden = len(r.kuma) - i
 			break
 		}
 		p := part{name: escape(g.Name)}
-		var up int
+		var up, timed int
 		var uptime float64
 		var down, other []string
 		for _, m := range g.Monitors {
-			uptime += m.Uptime
+			if m.UptimeKnown {
+				uptime += m.Uptime
+				timed++
+			}
 			switch {
 			case !m.Seen || m.Status == kuma.Pending:
 				p.level = max(p.level, levelWarn)
@@ -292,8 +311,8 @@ func kumaParts(r report) []part {
 			}
 		}
 		lines := []string{fmt.Sprintf("%d of %d up", up, len(g.Monitors))}
-		if len(g.Monitors) > 0 {
-			lines[0] += fmt.Sprintf(", %s over 24h", percent(uptime/float64(len(g.Monitors))))
+		if timed > 0 {
+			lines[0] += fmt.Sprintf(", %s over 24h", percent(uptime/float64(timed)))
 		}
 		if len(down) > 0 {
 			lines = append(lines, "Down: "+strings.Join(down, ", "))
@@ -302,7 +321,7 @@ func kumaParts(r report) []part {
 		p.text = strings.Join(lines, "\n")
 		out = append(out, p)
 	}
-	return out
+	return out, hidden
 }
 
 // percent shows an uptime ratio without rounding 99.96% up to 100%.
@@ -320,7 +339,8 @@ func statusEmbed(r report) discord.Embed {
 	if s, ok := storagePart(r); ok {
 		parts = append(parts, s)
 	}
-	parts = append(parts, kumaParts(r)...)
+	kparts, hidden := kumaParts(r)
+	parts = append(parts, kparts...)
 
 	worst := levelOK
 	var trouble []string
@@ -334,16 +354,30 @@ func statusEmbed(r report) discord.Embed {
 	if len(trouble) > 0 {
 		summary = "Needs a look: " + strings.Join(trouble, ", ") + "."
 	}
+	if hidden > 0 {
+		summary += fmt.Sprintf(" %d more Kuma groups don't fit on this card.", hidden)
+	}
 	e := discord.NewEmbed().
 		WithTitle("Media server status").
-		WithDescription(truncate(worst.dot()+" "+summary, maxDescription)).
+		WithDescription(truncate(worst.dot()+" "+summary, maxFieldValue)).
 		WithColor([...]int{colorApproved, colorPending, colorTrouble}[worst]).
 		WithTimestamp(r.at).
 		WithFooterText("Refreshed")
-	for _, p := range parts {
-		e = e.AddFields(p.field())
+	// In a big outage every group lists what's down; shorten the fields
+	// until the card fits, as Discord refuses a larger one.
+	n := utf8.RuneCountInString
+	for maxValue := maxFieldValue; ; maxValue /= 2 {
+		fields := make([]discord.EmbedField, len(parts))
+		total := n(e.Title) + n(e.Description) + n("Refreshed")
+		for i, p := range parts {
+			fields[i] = p.field(min(maxFieldName, maxValue/4), maxValue)
+			total += n(fields[i].Name) + n(fields[i].Value)
+		}
+		if total <= maxEmbedTotal || maxValue < 64 {
+			e.Fields = fields
+			return e
+		}
 	}
-	return e
 }
 
 func statusButtons() discord.ActionRowComponent {

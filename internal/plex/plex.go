@@ -273,7 +273,8 @@ func (c *Client) invites(ctx context.Context, serverName string) ([]invite, erro
 	}
 	var out []invite
 	for _, inv := range mc.Invites {
-		if inv.Server == "1" && slices.Contains(inv.Servers, inviteServer{Name: serverName}) {
+		// plex.tv writes flags as 1 or 0, but accept true and false too.
+		if inv.Server != "0" && inv.Server != "false" && slices.Contains(inv.Servers, inviteServer{Name: serverName}) {
 			out = append(out, inv)
 		}
 	}
@@ -294,7 +295,7 @@ func (c *Client) RemoveAccess(ctx context.Context, acct Account) (removed bool, 
 	for _, s := range shares {
 		// Someone invited by address and since signed up matches by it.
 		if acct.matches(strconv.Itoa(s.UserID), s.Email) {
-			return c.remove(ctx, c.sharesPath()+"/"+strconv.Itoa(s.ID))
+			return c.remove(ctx, c.sharesPath()+"/"+strconv.Itoa(s.ID), "")
 		}
 	}
 	srv, err := c.server(ctx)
@@ -309,7 +310,9 @@ func (c *Client) RemoveAccess(ctx context.Context, acct Account) (removed bool, 
 		if acct.matches(inv.ID, inv.Email) || acct.matches("", inv.ID) {
 			// As python-plexapi's cancelInvite: the invite's own flags.
 			q := url.Values{"friend": {orZero(inv.Friend)}, "home": {orZero(inv.Home)}, "server": {orZero(inv.Server)}}
-			return c.remove(ctx, "/api/invites/requested/"+url.PathEscape(inv.ID)+"?"+q.Encode())
+			// The ID may be the invitee's email address, so it stays out
+			// of any error.
+			return c.remove(ctx, "/api/invites/requested/"+url.PathEscape(inv.ID)+"?"+q.Encode(), inv.ID)
 		}
 	}
 	return false, nil
@@ -323,17 +326,31 @@ func orZero(s string) string {
 }
 
 // remove sends a DELETE; something already gone counts as not removed.
-func (c *Client) remove(ctx context.Context, path string) (bool, error) {
+// Its errors name neither the path nor secret, which may appear in it.
+func (c *Client) remove(ctx context.Context, path, secret string) (bool, error) {
 	_, err := c.do(ctx, http.MethodDelete, path, nil)
 	var se *statusError
-	if errors.As(err, &se) && se.code == http.StatusNotFound {
+	switch {
+	case errors.As(err, &se) && se.code == http.StatusNotFound:
 		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("plex: remove access: %w", err)
+	case errors.As(err, &se):
+		return false, fmt.Errorf("plex: remove access: plex.tv answered %s: %s", se.status, redact(se.text, secret))
+	case errors.Is(err, context.DeadlineExceeded) || isTimeout(err):
+		return false, errors.New("plex: remove access: plex.tv timed out")
+	case err != nil:
+		return false, errors.New("plex: remove access: plex.tv unreachable")
 	}
 	return true, nil
 }
+
+func isTimeout(err error) bool {
+	var ne interface{ Timeout() bool }
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// ErrServerNotFound means plex.tv doesn't list the server on the owner's
+// account.
+var ErrServerNotFound = errors.New("plex: server not found on this account")
 
 // Server is how plex.tv last saw the server.
 type Server struct {
@@ -360,7 +377,7 @@ func (c *Client) Server(ctx context.Context) (Server, error) {
 			return Server{Online: r.Presence, Version: r.ProductVersion}, nil
 		}
 	}
-	return Server{}, fmt.Errorf("plex: server %s not found on this account", c.serverID)
+	return Server{}, ErrServerNotFound
 }
 
 // redact replaces every case-insensitive occurrence of who in s.

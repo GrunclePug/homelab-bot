@@ -41,6 +41,12 @@ type AccessRequest struct {
 	// made before it was recorded.
 	PlexAccount string
 	ShareState  string
+	// The "Remove Plex access?" card, if one was posted.
+	ShareChannelID string
+	ShareMessageID string
+	// PlexAlready is whether the account already had access when the
+	// request was approved, so no invite was sent.
+	PlexAlready bool
 }
 
 // Share states of an approved request: what is being done about its Plex
@@ -51,6 +57,9 @@ const (
 	ShareKept     = "kept"     // an approver chose to keep it
 	ShareRemoving = "removing" // an approver's Remove click is being acted on
 	ShareRemoved  = "removed"
+	// ShareSuperseded is an approval replaced by a newer one for the same
+	// member, which carries on tracking their access.
+	ShareSuperseded = "superseded"
 )
 
 // CreateRequest records a new pending request and returns its ID. It
@@ -107,7 +116,8 @@ func (s *Store) OpenRequest(ctx context.Context, userID string) (bool, error) {
 }
 
 const requestColumns = `id, user_id, user_name, plex, note, status, channel_id, message_id,
-	decided_by, created_at, decided_at, invited_at, plex_account, share_state`
+	decided_by, created_at, decided_at, invited_at, plex_account, share_state,
+	share_channel_id, share_message_id, plex_already`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -117,7 +127,8 @@ func scanRequest(row scanner) (AccessRequest, error) {
 		created, decided, invited string
 	)
 	err := row.Scan(&r.ID, &r.UserID, &r.UserName, &r.Plex, &r.Note, &r.Status, &r.ChannelID, &r.MessageID,
-		&r.DecidedBy, &created, &decided, &invited, &r.PlexAccount, &r.ShareState)
+		&r.DecidedBy, &created, &decided, &invited, &r.PlexAccount, &r.ShareState,
+		&r.ShareChannelID, &r.ShareMessageID, &r.PlexAlready)
 	if err != nil {
 		return AccessRequest{}, err
 	}
@@ -151,31 +162,15 @@ func (s *Store) Request(ctx context.Context, id int) (AccessRequest, bool, error
 // Processing lists the requests an approver's click was acting on, for
 // example when the bot stopped halfway through.
 func (s *Store) Processing(ctx context.Context) ([]AccessRequest, error) {
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT "+requestColumns+" FROM access_request WHERE status = ? ORDER BY id", StatusProcessing)
-	if err != nil {
-		return nil, fmt.Errorf("list processing access requests: %w", err)
-	}
-	defer rows.Close()
-	var out []AccessRequest
-	for rows.Next() {
-		r, err := scanRequest(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list processing access requests: %w", err)
-		}
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list processing access requests: %w", err)
-	}
-	return out, nil
+	return s.listRequests(ctx, "processing access requests", " WHERE status = ? ORDER BY id", StatusProcessing)
 }
 
-// MarkInvited records that the Plex invite for a request went out, and
-// who it is for, or "" if that isn't known.
-func (s *Store) MarkInvited(ctx context.Context, id int, plexAccount string) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE access_request SET invited_at = ?, plex_account = ? WHERE id = ?",
-		time.Now().UTC().Format(time.RFC3339), plexAccount, id)
+// MarkInvited records that the account has Plex access, through a new
+// invite or, if already is set, one it had before; and who the access is
+// for, or "" if that isn't known or isn't to be tracked.
+func (s *Store) MarkInvited(ctx context.Context, id int, plexAccount string, already bool) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE access_request SET invited_at = ?, plex_account = ?, plex_already = ? WHERE id = ?",
+		time.Now().UTC().Format(time.RFC3339), plexAccount, already, id)
 	if err != nil {
 		return fmt.Errorf("mark access request %d invited: %w", id, err)
 	}
@@ -224,9 +219,9 @@ func (s *Store) Decide(ctx context.Context, id int, status, decidedBy, plex stri
 func (s *Store) Share(ctx context.Context, userID string) (AccessRequest, bool, error) {
 	r, err := scanRequest(s.db.QueryRowContext(ctx,
 		"SELECT "+requestColumns+` FROM access_request
-		 WHERE user_id = ? AND status = ? AND plex_account != '' AND share_state != ?
+		 WHERE user_id = ? AND status = ? AND plex_account != '' AND share_state NOT IN (?, ?)
 		 ORDER BY id DESC LIMIT 1`,
-		userID, StatusApproved, ShareRemoved))
+		userID, StatusApproved, ShareRemoved, ShareSuperseded))
 	if errors.Is(err, sql.ErrNoRows) {
 		return AccessRequest{}, false, nil
 	}
@@ -263,22 +258,66 @@ func (s *Store) SetShareState(ctx context.Context, id int, to string, from ...st
 // Removing lists the requests whose share an approver's Remove click was
 // acting on, for example when the bot stopped halfway through.
 func (s *Store) Removing(ctx context.Context) ([]AccessRequest, error) {
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT "+requestColumns+" FROM access_request WHERE share_state = ? ORDER BY id", ShareRemoving)
+	return s.listRequests(ctx, "access requests being removed", " WHERE share_state = ? ORDER BY id", ShareRemoving)
+}
+
+// SetSharePost records the "Remove Plex access?" card of a request.
+func (s *Store) SetSharePost(ctx context.Context, id int, channelID, messageID string) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE access_request SET share_channel_id = ?, share_message_id = ? WHERE id = ?", channelID, messageID, id)
 	if err != nil {
-		return nil, fmt.Errorf("list access requests being removed: %w", err)
+		return fmt.Errorf("set plex share post of access request %d: %w", id, err)
+	}
+	return nil
+}
+
+// HadAccount reports whether a request of the member's before request
+// before was approved for the same Plex account.
+func (s *Store) HadAccount(ctx context.Context, userID, plexAccount string, before int) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM access_request
+		 WHERE user_id = ? AND plex_account = ? AND status = ? AND id < ?`,
+		userID, plexAccount, StatusApproved, before).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("check earlier plex access of member %s: %w", userID, err)
+	}
+	return n > 0, nil
+}
+
+// OlderShares lists the member's approved requests before request newer
+// whose Plex access is still tracked, newest first.
+func (s *Store) OlderShares(ctx context.Context, userID string, newer int) ([]AccessRequest, error) {
+	return s.listRequests(ctx, "older plex shares",
+		` WHERE user_id = ? AND id < ? AND status = ? AND plex_account != '' AND share_state NOT IN (?, ?) ORDER BY id DESC`,
+		userID, newer, StatusApproved, ShareRemoved, ShareSuperseded)
+}
+
+// ActiveShares lists the approved requests whose Plex access is tracked
+// and nobody has been asked about, for the startup check of members who
+// left or lost the role while the bot was down.
+func (s *Store) ActiveShares(ctx context.Context) ([]AccessRequest, error) {
+	return s.listRequests(ctx, "active plex shares",
+		` WHERE status = ? AND plex_account != '' AND share_state = ? ORDER BY id`,
+		StatusApproved, ShareActive)
+}
+
+func (s *Store) listRequests(ctx context.Context, what, where string, args ...any) ([]AccessRequest, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+requestColumns+" FROM access_request"+where, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", what, err)
 	}
 	defer rows.Close()
 	var out []AccessRequest
 	for rows.Next() {
 		r, err := scanRequest(rows)
 		if err != nil {
-			return nil, fmt.Errorf("list access requests being removed: %w", err)
+			return nil, fmt.Errorf("list %s: %w", what, err)
 		}
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list access requests being removed: %w", err)
+		return nil, fmt.Errorf("list %s: %w", what, err)
 	}
 	return out, nil
 }

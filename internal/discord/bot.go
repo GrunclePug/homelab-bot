@@ -13,6 +13,7 @@ import (
 
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/cache"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/gateway"
@@ -125,7 +126,14 @@ func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *
 		// member's full email in the review step and interaction tokens.
 		bot.WithLogger(slog.New(atLeast{Handler: log.Handler(), min: slog.LevelInfo}).With("component", "disgo")),
 		// Guild members is a privileged intent, for leaves and role changes.
-		bot.WithGatewayConfigOpts(gateway.WithIntents(gateway.IntentGuilds, gateway.IntentGuildMembers)),
+		// The member cache, which disgo leaves off by default, gives role
+		// changes the roles from before; a large threshold of 250, the
+		// most Discord allows, fills it when the bot connects.
+		bot.WithGatewayConfigOpts(
+			gateway.WithIntents(gateway.IntentGuilds, gateway.IntentGuildMembers),
+			gateway.WithLargeThreshold(250),
+		),
+		bot.WithCacheConfigOpts(cache.WithCaches(cache.FlagMembers)),
 		bot.WithEventManagerConfigOpts(bot.WithAsyncEventsEnabled()),
 		bot.WithRestConfigOpts(rest.WithDefaultAllowedMentions(none)),
 		bot.WithEventListenerFunc(b.onCommand),
@@ -145,15 +153,20 @@ func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *
 		issues:  sc,
 		log:     log,
 	}
+	currentRoles := func(userID snowflake.ID) ([]snowflake.ID, bool) {
+		m, ok := client.Caches.Member(cfg.GuildID, userID)
+		return m.RoleIDs, ok
+	}
 	b.access = &access{
-		guild:     cfg.GuildID,
-		channel:   cfg.AccessChannelID,
-		mediaRole: cfg.MediaRoleID,
-		seerrURL:  cfg.SeerrPublicURL,
-		rest:      client.Rest,
-		store:     st,
-		plex:      pc,
-		log:       log,
+		currentRoles: currentRoles,
+		guild:        cfg.GuildID,
+		channel:      cfg.AccessChannelID,
+		mediaRole:    cfg.MediaRoleID,
+		seerrURL:     cfg.SeerrPublicURL,
+		rest:         client.Rest,
+		store:        st,
+		plex:         pc,
+		log:          log,
 	}
 	return b, nil
 }
@@ -214,6 +227,9 @@ func (b *Bot) Start(ctx context.Context) error {
 	}
 	if err := b.access.recoverRemoving(ctx); err != nil {
 		b.log.Error("recover interrupted plex share removals", "err", err)
+	}
+	if err := b.access.checkMissed(ctx); err != nil {
+		b.log.Error("check members missed while the bot was down", "err", err)
 	}
 	return nil
 }
@@ -327,7 +343,9 @@ func (b *Bot) onMemberUpdate(e *events.GuildMemberUpdate) {
 	defer b.handlers.Done()
 	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
 	defer cancel()
-	if err := b.access.memberChanged(ctx, e.Member.User.ID, e.Member.RoleIDs); err != nil {
+	// OldMember is empty if the member wasn't cached yet.
+	oldKnown := e.OldMember.User.ID != 0
+	if err := b.access.memberChanged(ctx, e.Member.User.ID, e.OldMember.RoleIDs, oldKnown, e.Member.RoleIDs); err != nil {
 		b.log.Error("member changed", "err", err)
 	}
 }

@@ -44,6 +44,7 @@ type accessREST interface {
 	DeleteMessage(channelID, messageID snowflake.ID, opts ...rest.RequestOpt) error
 	AddMemberRole(guildID, userID, roleID snowflake.ID, opts ...rest.RequestOpt) error
 	CreateDMChannel(userID snowflake.ID, opts ...rest.RequestOpt) (*discord.DMChannel, error)
+	GetMember(guildID, userID snowflake.ID, opts ...rest.RequestOpt) (*discord.Member, error)
 }
 
 // plexSharer invites accounts to the Plex server and removes their access.
@@ -60,11 +61,15 @@ type accessStore interface {
 	Request(ctx context.Context, id int) (store.AccessRequest, bool, error)
 	Processing(ctx context.Context) ([]store.AccessRequest, error)
 	Claim(ctx context.Context, id int, from, to, by string) (bool, error)
-	MarkInvited(ctx context.Context, id int, plexAccount string) error
+	MarkInvited(ctx context.Context, id int, plexAccount string, already bool) error
 	Decide(ctx context.Context, id int, status, decidedBy, plex string) error
 	Share(ctx context.Context, userID string) (store.AccessRequest, bool, error)
 	SetShareState(ctx context.Context, id int, to string, from ...string) (bool, error)
 	Removing(ctx context.Context) ([]store.AccessRequest, error)
+	SetSharePost(ctx context.Context, id int, channelID, messageID string) error
+	HadAccount(ctx context.Context, userID, plexAccount string, before int) (bool, error)
+	OlderShares(ctx context.Context, userID string, newer int) ([]store.AccessRequest, error)
+	ActiveShares(ctx context.Context) ([]store.AccessRequest, error)
 }
 
 // access runs access requests: members ask, approvers approve or deny,
@@ -78,6 +83,10 @@ type access struct {
 	store     accessStore
 	plex      plexSharer
 	log       *slog.Logger
+
+	// currentRoles returns a member's roles as the bot last saw them, if
+	// it has seen them; nil to skip that check.
+	currentRoles func(snowflake.ID) ([]snowflake.ID, bool)
 }
 
 // Texts members see.
@@ -202,44 +211,58 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 		a.log.Warn("plex invite failed", "request", id, "err", err)
 		return a.inviteFailed(fin, *r, userID, approver, err)
 	}
-	if err := a.store.MarkInvited(fin, id, string(acct)); err != nil {
+	var notes []string
+	if already && acct != "" {
+		// Track only an account this member was approved for before, as
+		// after losing the media role and asking again: an account that
+		// is someone else's must never be removable through this member.
+		own, err := a.store.HadAccount(fin, r.UserID, string(acct), id)
+		if err != nil {
+			a.log.Error("check earlier plex access", "request", id, "err", err)
+		}
+		if !own {
+			acct = ""
+			notes = append(notes, "This Plex account had access before this request, so I won't offer to remove it. Remove it by hand in Plex if needed")
+		}
+	}
+	if unknown {
+		notes = append(notes, "Couldn't find their Plex access on plex.tv, so if they leave, remove it by hand")
+	}
+	if err := a.store.MarkInvited(fin, id, string(acct), already); err != nil {
 		// Carry on: the member is invited. Only a restart before the end
 		// would now reopen the request instead of finishing it.
 		a.log.Error("record plex invite", "request", id, "err", err)
 	}
-	plexStep := "Plex invite sent to " + code(maskAccount(r.Plex))
-	if already {
-		plexStep = code(maskAccount(r.Plex)) + " already had Plex access, so no new invite was sent"
+	r.PlexAccount, r.PlexAlready = string(acct), already
+	// Cards about their earlier approvals no longer apply.
+	if err := a.retireOlder(fin, *r); err != nil {
+		a.log.Error("retire earlier plex share cards", "request", id, "err", err)
 	}
-	note := ""
-	if unknown {
-		note = "Couldn't find the Plex share, so if they leave, remove their Plex access by hand"
-	}
-	return a.onboard(fin, *r, userID, approver, plexStep, note)
+	return a.onboard(fin, *r, userID, approver, notes...)
 }
 
 // onboard finishes an approval once the account has Plex access: media
-// role, welcome DM, then the request is closed as approved. plexStep says
-// how it got access, and note, if set, is added to the list of steps on
-// the post.
-func (a *access) onboard(ctx context.Context, r store.AccessRequest, userID snowflake.ID, approver, plexStep, note string) (string, error) {
+// role, welcome DM, then the request is closed as approved. notes are
+// added to the list of steps on the post.
+func (a *access) onboard(ctx context.Context, r store.AccessRequest, userID snowflake.ID, approver string, notes ...string) (string, error) {
 	id := r.ID
-	steps := []string{plexStep}
+	steps := []string{"Plex invite sent to " + code(maskAccount(r.Plex))}
+	if r.PlexAlready {
+		steps[0] = code(maskAccount(r.Plex)) + " already had Plex access, so no new invite was sent"
+	}
 	if err := a.rest.AddMemberRole(a.guild, userID, a.mediaRole, rest.WithCtx(ctx), rest.WithReason("Access request approved by "+approver)); err != nil {
 		a.log.Warn("add media role failed", "request", id, "err", err)
 		steps = append(steps, "Couldn't add the media role, add it by hand ("+err.Error()+")")
 	} else {
 		steps = append(steps, "Media role added")
 	}
-	if err := a.dm(ctx, userID, a.welcome()); err != nil {
+	if err := a.dm(ctx, userID, a.welcome(r.PlexAlready)); err != nil {
 		a.log.Warn("welcome DM failed", "request", id, "err", err)
 		steps = append(steps, "Couldn't DM the welcome message, they may have DMs turned off")
 	} else {
 		steps = append(steps, "Welcome DM sent")
 	}
-	if note != "" {
-		steps = append(steps, note)
-	}
+	steps = append(steps, notes...)
 
 	if err := a.store.Decide(ctx, id, store.StatusApproved, approver, maskAccount(r.Plex)); err != nil {
 		return "", err
@@ -342,8 +365,7 @@ func (a *access) recoverInterrupted(ctx context.Context) error {
 				continue
 			}
 			a.log.Info("finishing access request interrupted after its invite", "request", r.ID)
-			_, err = a.onboard(ctx, r, userID, orDefault(r.DecidedBy, "an approver"),
-				"Plex invite sent to "+code(maskAccount(r.Plex)), "Finished after the bot restarted")
+			_, err = a.onboard(ctx, r, userID, orDefault(r.DecidedBy, "an approver"), "Finished after the bot restarted")
 			errs = append(errs, err)
 			continue
 		}
@@ -370,14 +392,20 @@ func (a *access) dm(ctx context.Context, userID snowflake.ID, text string) error
 	return nil
 }
 
-func (a *access) welcome() string {
+// welcome is the DM an approved member gets. already is whether their
+// account had access before, so no new invite was sent.
+func (a *access) welcome(already bool) string {
+	plexStep := "1. Accept the Plex invite. It's in your email, or under Settings, Manage Library Access, at https://app.plex.tv."
+	if already {
+		plexStep = "1. Your Plex account already had access. If you haven't accepted its invite yet, it's in your email, or under Settings, Manage Library Access, at https://app.plex.tv."
+	}
 	seerr := "2. Sign in to Seerr with your Plex account to request movies and shows."
 	if a.seerrURL != "" {
 		seerr = "2. Sign in to Seerr at " + a.seerrURL + " with your Plex account to request movies and shows."
 	}
 	return strings.Join([]string{
 		"**You're in!** Your request for media server access was approved.",
-		"1. Accept the Plex invite. It's in your email, or under Settings, Manage Library Access, at https://app.plex.tv.",
+		plexStep,
 		seerr,
 		"3. Use `/help` in the server to see what else you can do, such as `/queue` for what's downloading.",
 	}, "\n")

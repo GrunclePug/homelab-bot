@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const serverXML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -146,6 +148,8 @@ type plexTV struct {
 	shares, invites string
 	alreadyShared   bool
 	failLists       bool
+	failDelete      int           // status for DELETEs, if set
+	slowDelete      time.Duration // DELETEs wait this long first
 	requests        []string
 }
 
@@ -153,6 +157,15 @@ func (p *plexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.requests = append(p.requests, r.Method+" "+r.URL.RequestURI())
 	if p.failLists && r.Method == http.MethodGet && r.URL.Path != "/api/servers/abc123" {
 		http.Error(w, "boom", http.StatusInternalServerError)
+		return
+	}
+	if r.Method == http.MethodDelete && p.slowDelete > 0 {
+		time.Sleep(p.slowDelete)
+	}
+	if r.Method == http.MethodDelete && p.failDelete != 0 {
+		w.WriteHeader(p.failDelete)
+		// plex.tv's message might repeat the invite's ID, an address here.
+		io.WriteString(w, `<Response code="503" status="Busy with `+path.Base(r.URL.Path)+`"/>`)
 		return
 	}
 	switch r.Method + " " + r.URL.Path {
@@ -183,7 +196,8 @@ const (
 	// An invite to an address with no Plex account has the address as its ID.
 	pendingInvite = `<Invite id="6002" email="pending@example.com" username="pend" friend="0" home="0" server="1"><Server name="media" numLibraries="2"/></Invite>
 		<Invite id="new@example.com" email="new@example.com" friend="0" home="0" server="1"><Server name="media" numLibraries="2"/></Invite>
-		<Invite id="6003" email="elsewhere@example.com" username="" friend="0" home="0" server="1"><Server name="another server" numLibraries="1"/></Invite>`
+		<Invite id="6003" email="elsewhere@example.com" username="" friend="0" home="0" server="1"><Server name="another server" numLibraries="1"/></Invite>
+		<Invite id="6004" email="truthy@example.com" username="" friend="false" home="false" server="true"><Server name="media" numLibraries="2"/></Invite>`
 	// new@example.com after signing up and accepting.
 	signedUpShare = `<SharedServer id="73" userID="6010" username="newbie" email="New@Example.com"/>`
 )
@@ -206,6 +220,7 @@ func TestInviteAccountID(t *testing.T) {
 		{"already shared, accepted, by username", "friendly", true, false, "id:6001", true, false},
 		{"already shared, pending", "Pending@Example.com", true, false, "id:6002", true, false},
 		{"invite to another server doesn't count", "elsewhere@example.com", false, false, "", false, true},
+		{"flags written as true", "truthy@example.com", false, false, "id:6004", false, false},
 		{"not listed anywhere", "nobody@example.com", false, false, "", false, true},
 		{"already shared, lists fail", "friend@example.com", true, true, "", true, true},
 	}
@@ -267,6 +282,22 @@ func TestRemoveAccess(t *testing.T) {
 				t.Errorf("RemoveAccess = %v, %v; deletes %v, want %v %v", removed, err, deletes, tc.removed, want)
 			}
 		})
+	}
+
+	// A failed cancel of an invite to an address names neither the
+	// address nor the request.
+	for _, p := range []*plexTV{
+		{shares: acceptedShare, invites: pendingInvite, failDelete: http.StatusServiceUnavailable},
+		{shares: acceptedShare, invites: pendingInvite, slowDelete: 300 * time.Millisecond},
+	} {
+		srv := httptest.NewServer(p)
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		_, err := NewClient(srv.URL, "tok", "abc123").RemoveAccess(ctx, accountEmail("new@example.com"))
+		cancel()
+		srv.Close()
+		if err == nil || strings.Contains(err.Error(), "example.com") || strings.Contains(err.Error(), "/api/") {
+			t.Errorf("failed cancel: err = %v", err)
+		}
 	}
 
 	p := &plexTV{failLists: true}

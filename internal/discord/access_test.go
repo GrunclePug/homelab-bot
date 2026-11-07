@@ -36,6 +36,15 @@ type fakeAccessDiscord struct {
 	roles   map[snowflake.ID][]snowflake.ID
 	roleErr error
 	dmErr   error
+	gone    map[snowflake.ID]bool // members who left the server
+}
+
+// GetMember answers from roles; a member who left is not found.
+func (f *fakeAccessDiscord) GetMember(_, userID snowflake.ID, _ ...rest.RequestOpt) (*discord.Member, error) {
+	if f.gone[userID] {
+		return nil, &rest.Error{Response: &http.Response{StatusCode: http.StatusNotFound}, Message: "Unknown Member"}
+	}
+	return &discord.Member{User: discord.User{ID: userID}, RoleIDs: f.roles[userID]}, nil
 }
 
 func (f *fakeAccessDiscord) AddMemberRole(_, userID, roleID snowflake.ID, _ ...rest.RequestOpt) error {
@@ -189,7 +198,7 @@ func newTestAccess(t *testing.T) (*access, *fakeAccessDiscord, *fakePlexTV, *sto
 	fp := &fakePlexTV{}
 	srv := httptest.NewServer(fp)
 	t.Cleanup(srv.Close)
-	fd := &fakeAccessDiscord{fakeDiscord: newFakeDiscord(), roles: map[snowflake.ID][]snowflake.ID{}}
+	fd := &fakeAccessDiscord{fakeDiscord: newFakeDiscord(), roles: map[snowflake.ID][]snowflake.ID{}, gone: map[snowflake.ID]bool{}}
 	return &access{
 		guild:     1,
 		channel:   accessChannel,
@@ -473,7 +482,7 @@ func TestAccessRecoverInterrupted(t *testing.T) {
 			t.Fatalf("claim %d: %v, %v", id, ok, err)
 		}
 	}
-	if err := st.MarkInvited(ctx, 2, ""); err != nil {
+	if err := st.MarkInvited(ctx, 2, "", false); err != nil {
 		t.Fatal(err)
 	}
 
