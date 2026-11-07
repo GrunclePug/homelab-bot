@@ -3,6 +3,7 @@ package qbit
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -146,6 +147,34 @@ func TestClient(t *testing.T) {
 	}
 	_, err = NewClient(srv.URL, "wrong").Torrents(ctx)
 	if err == nil || !strings.Contains(err.Error(), "check QBIT_API_KEY") {
+		t.Errorf("bad key: err = %v", err)
+	}
+}
+
+func TestTransfer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer key" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v2/app/version":
+			io.WriteString(w, "v5.3.0")
+		case "/api/v2/transfer/info":
+			io.WriteString(w, `{"connection_status":"firewalled","dht_nodes":365,"dl_info_data":1,"dl_info_speed":2663501,
+				"dl_rate_limit":0,"last_external_address_v4":"192.0.2.1","last_external_address_v6":"","up_info_data":1,
+				"up_info_speed":415549,"up_rate_limit":4999168}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	tr, err := NewClient(srv.URL, "key").Transfer(context.Background())
+	want := Transfer{Version: "v5.3.0", Connection: "firewalled", DLSpeed: 2663501, UPSpeed: 415549}
+	if err != nil || tr != want {
+		t.Errorf("Transfer = %+v, %v; want %+v", tr, err, want)
+	}
+	if _, err := NewClient(srv.URL, "bad").Transfer(context.Background()); err == nil || !strings.Contains(err.Error(), "QBIT_API_KEY") {
 		t.Errorf("bad key: err = %v", err)
 	}
 }

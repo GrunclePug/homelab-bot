@@ -43,27 +43,72 @@ func NewClient(baseURL, apiKey string) *Client {
 
 // Torrents lists every torrent.
 func (c *Client) Torrents(ctx context.Context) ([]Torrent, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v2/torrents/info", nil)
-	if err != nil {
+	var list []Torrent
+	if err := c.get(ctx, "/api/v2/torrents/info", &list); err != nil {
 		return nil, fmt.Errorf("qbittorrent: list torrents: %w", err)
+	}
+	return list, nil
+}
+
+// Transfer is qBittorrent's overall transfer state.
+type Transfer struct {
+	Version    string
+	Connection string // connected, firewalled or disconnected
+	DLSpeed    int64  // bytes per second
+	UPSpeed    int64
+}
+
+// Transfer reads qBittorrent's version and overall transfer state.
+func (c *Client) Transfer(ctx context.Context) (Transfer, error) {
+	var (
+		version []byte
+		info    struct {
+			Connection string `json:"connection_status"`
+			DLSpeed    int64  `json:"dl_info_speed"`
+			UPSpeed    int64  `json:"up_info_speed"`
+		}
+	)
+	if err := c.get(ctx, "/api/v2/app/version", &version); err != nil {
+		return Transfer{}, fmt.Errorf("qbittorrent: read version: %w", err)
+	}
+	if err := c.get(ctx, "/api/v2/transfer/info", &info); err != nil {
+		return Transfer{}, fmt.Errorf("qbittorrent: read transfer info: %w", err)
+	}
+	return Transfer{
+		Version:    string(bytes.TrimSpace(version)),
+		Connection: info.Connection,
+		DLSpeed:    info.DLSpeed,
+		UPSpeed:    info.UPSpeed,
+	}, nil
+}
+
+// get decodes the JSON answer to a GET into out, or stores the raw body
+// if out is a *[]byte.
+func (c *Client) get(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("qbittorrent: list torrents: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return nil, errors.New("qbittorrent: API key rejected: check QBIT_API_KEY")
+		return errors.New("API key rejected: check QBIT_API_KEY")
 	default:
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("qbittorrent: list torrents: %s: %s", resp.Status, bytes.TrimSpace(msg))
+		return fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(msg))
 	}
-	var list []Torrent
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		return nil, fmt.Errorf("qbittorrent: decode torrents: %w", err)
+	if raw, ok := out.(*[]byte); ok {
+		*raw, err = io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+		return err
 	}
-	return list, nil
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	return nil
 }

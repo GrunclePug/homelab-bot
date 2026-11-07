@@ -1,8 +1,9 @@
 // Package plex invites people to a Plex server through plex.tv.
 //
 // plex.tv's sharing API isn't documented. This follows what python-plexapi
-// (MyPlexAccount.inviteFriend) does: list the server's library sections,
-// then share all of them with the invited account.
+// does: inviteFriend lists the server's library sections and shares all of
+// them with the invited account; updateFriend with removeSections deletes
+// the server's share by its ID.
 package plex
 
 import (
@@ -10,12 +11,14 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -74,15 +77,28 @@ func (c *Client) Sections(ctx context.Context) ([]Section, error) {
 	return mc.Servers[0].Sections, nil
 }
 
+// ErrShareUnknown means an invite went out but its share ID couldn't be
+// found, so the share can only be removed by hand.
+var ErrShareUnknown = errors.New("plex: invite sent, but its share ID is unknown")
+
+// sharedServer is one account's share of the server, as plex.tv lists it.
+type sharedServer struct {
+	ID       int    `xml:"id,attr"`
+	Email    string `xml:"email,attr"`
+	Username string `xml:"username,attr"`
+}
+
 // Invite shares every library with a Plex account, given as its email
-// address or username. plex.tv sends the invitation.
-func (c *Client) Invite(ctx context.Context, who string) error {
+// address or username, and returns the ID of the share it created.
+// plex.tv sends the invitation. If the invite went out but the share's ID
+// can't be found, it returns an error wrapping ErrShareUnknown.
+func (c *Client) Invite(ctx context.Context, who string) (int, error) {
 	secs, err := c.Sections(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(secs) == 0 {
-		return fmt.Errorf("plex: server %s has no libraries to share", c.serverID)
+		return 0, fmt.Errorf("plex: server %s has no libraries to share", c.serverID)
 	}
 	ids := make([]int, len(secs))
 	for i, s := range secs {
@@ -103,12 +119,114 @@ func (c *Client) Invite(ctx context.Context, who string) error {
 			"filterMusic":       "",
 		},
 	}
-	if _, err := c.do(ctx, http.MethodPost, "/api/servers/"+url.PathEscape(c.serverID)+"/shared_servers", req); err != nil {
+	body, err := c.do(ctx, http.MethodPost, c.sharesPath(), req)
+	if err != nil {
 		// who may be an email address, and plex.tv's message might repeat
 		// it, so it's taken out of the error, which ends up in Discord.
-		return fmt.Errorf("plex: invite: %s", redact(err.Error(), who))
+		return 0, fmt.Errorf("plex: invite: %s", redact(err.Error(), who))
+	}
+	if id := createdShare(body); id > 0 {
+		return id, nil
+	}
+	id, err := c.findShare(ctx, who)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s", ErrShareUnknown, redact(err.Error(), who))
+	}
+	if id == 0 {
+		return 0, ErrShareUnknown
+	}
+	return id, nil
+}
+
+func (c *Client) sharesPath() string {
+	return "/api/servers/" + url.PathEscape(c.serverID) + "/shared_servers"
+}
+
+// createdShare reads the share ID from plex.tv's answer to an invite,
+// which is a SharedServer element, on its own or in a MediaContainer.
+func createdShare(body []byte) int {
+	var one struct {
+		XMLName xml.Name
+		ID      int            `xml:"id,attr"`
+		Shares  []sharedServer `xml:"SharedServer"`
+	}
+	if xml.Unmarshal(body, &one) != nil {
+		return 0
+	}
+	if one.XMLName.Local == "SharedServer" {
+		return one.ID
+	}
+	if len(one.Shares) == 1 {
+		return one.Shares[0].ID
+	}
+	return 0
+}
+
+// findShare looks up the share of the account who, by email address or
+// username. It returns 0 if there is none.
+func (c *Client) findShare(ctx context.Context, who string) (int, error) {
+	body, err := c.do(ctx, http.MethodGet, c.sharesPath(), nil)
+	if err != nil {
+		return 0, err
+	}
+	var mc struct {
+		Shares []sharedServer `xml:"SharedServer"`
+	}
+	if err := xml.Unmarshal(body, &mc); err != nil {
+		return 0, fmt.Errorf("decode shares: %w", err)
+	}
+	for _, s := range mc.Shares {
+		if strings.EqualFold(s.Email, who) || strings.EqualFold(s.Username, who) {
+			return s.ID, nil
+		}
+	}
+	return 0, nil
+}
+
+// RemoveShare stops sharing the server through the share with this ID,
+// whether or not its invite was accepted. A share that is already gone
+// is not an error.
+func (c *Client) RemoveShare(ctx context.Context, id int) error {
+	if id <= 0 {
+		return errors.New("plex: remove share: no share ID")
+	}
+	_, err := c.do(ctx, http.MethodDelete, c.sharesPath()+"/"+strconv.Itoa(id), nil)
+	var se *statusError
+	if errors.As(err, &se) && se.code == http.StatusNotFound {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("plex: remove share %d: %w", id, err)
 	}
 	return nil
+}
+
+// Server is how plex.tv last saw the server.
+type Server struct {
+	Online  bool
+	Version string
+}
+
+// Server reports whether plex.tv sees the server online, and its version.
+func (c *Client) Server(ctx context.Context) (Server, error) {
+	body, err := c.do(ctx, http.MethodGet, "/api/v2/resources", nil)
+	if err != nil {
+		return Server{}, fmt.Errorf("plex: list resources: %w", err)
+	}
+	var rs []struct {
+		ClientIdentifier string `json:"clientIdentifier"`
+		Presence         bool   `json:"presence"`
+		ProductVersion   string `json:"productVersion"`
+	}
+	if err := json.Unmarshal(body, &rs); err != nil {
+		return Server{}, fmt.Errorf("plex: list resources: decode: %w", err)
+	}
+	for _, r := range rs {
+		if r.ClientIdentifier == c.serverID {
+			return Server{Online: r.Presence, Version: r.ProductVersion}, nil
+		}
+	}
+	return Server{}, fmt.Errorf("plex: server %s not found on this account", c.serverID)
 }
 
 // redact replaces every case-insensitive occurrence of who in s.
@@ -135,6 +253,11 @@ func (c *Client) do(ctx context.Context, method, path string, in any) ([]byte, e
 	req.Header.Set("X-Plex-Token", c.token)
 	req.Header.Set("X-Plex-Client-Identifier", clientID)
 	req.Header.Set("X-Plex-Product", clientID)
+	// The v2 API answers in XML unless asked for JSON; the older one
+	// ignores this and always answers in XML.
+	if strings.HasPrefix(path, "/api/v2/") {
+		req.Header.Set("Accept", "application/json")
+	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -148,10 +271,18 @@ func (c *Client) do(ctx context.Context, method, path string, in any) ([]byte, e
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("%s %s: %s", method, path, errorText(resp.Status, b))
+		return nil, &statusError{code: resp.StatusCode, msg: fmt.Sprintf("%s %s: %s", method, path, errorText(resp.Status, b))}
 	}
 	return b, nil
 }
+
+// statusError is an answer from plex.tv outside 2xx.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return e.msg }
 
 // errorText pulls the message out of a plex.tv error body, which is
 // usually XML such as <errors><error code="1001" message="..."/></errors>.

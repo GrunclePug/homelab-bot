@@ -48,6 +48,10 @@ func (b *Bot) onComponent(e *events.ComponentInteractionCreate) {
 		b.accessComponent(e, id)
 		return
 	}
+	if id == idStatusRefresh {
+		b.statusRefreshed(e)
+		return
+	}
 	if !hasRole(e.Member(), b.cfg.AdminRoleID) {
 		b.ephemeral(e.CreateMessage, textAdminsOnly)
 		return

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -70,11 +72,14 @@ func (f *fakeAccessDiscord) dms(userID snowflake.ID) []string {
 }
 
 // fakePlexTV is plex.tv with one server; invites fail while failInvite
-// is set.
+// is set. Each invite creates a share, numbered from 100.
 type fakePlexTV struct {
 	mu         sync.Mutex
 	invited    []string
+	removed    []int
 	failInvite bool
+	failRemove bool
+	noShareID  bool // invites name no share, and none is listed
 	echo       bool // the failure message repeats the invited address
 }
 
@@ -102,8 +107,21 @@ func (f *fakePlexTV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.invited = append(f.invited, body.Shared.Email)
-		io.WriteString(w, `<SharedServer/>`)
+		if f.noShareID {
+			io.WriteString(w, `<SharedServer/>`)
+			return
+		}
+		fmt.Fprintf(w, `<SharedServer id="%d"/>`, 99+len(f.invited))
 	default:
+		if id, ok := strings.CutPrefix(r.URL.Path, "/api/servers/srv/shared_servers/"); ok && r.Method == http.MethodDelete {
+			if f.failRemove {
+				http.Error(w, "busy", http.StatusServiceUnavailable)
+				return
+			}
+			n, _ := strconv.Atoi(id)
+			f.removed = append(f.removed, n)
+			return
+		}
 		http.NotFound(w, r)
 	}
 }
@@ -422,7 +440,7 @@ func TestAccessRecoverInterrupted(t *testing.T) {
 			t.Fatalf("claim %d: %v, %v", id, ok, err)
 		}
 	}
-	if err := st.MarkInvited(ctx, 2); err != nil {
+	if err := st.MarkInvited(ctx, 2, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -454,20 +472,20 @@ func TestAccessRecoverInterrupted(t *testing.T) {
 // cancelAfterInvite ends the click's context as soon as the invite has
 // gone out, as a slow plex.tv answer would.
 type cancelAfterInvite struct {
-	inviter
+	plexSharer
 	cancel func()
 }
 
-func (c cancelAfterInvite) Invite(ctx context.Context, who string) error {
+func (c cancelAfterInvite) Invite(ctx context.Context, who string) (int, error) {
 	defer c.cancel()
-	return c.inviter.Invite(ctx, who)
+	return c.plexSharer.Invite(ctx, who)
 }
 
 func TestAccessApproveOutlivesContext(t *testing.T) {
 	a, fd, _, st := newTestAccess(t)
 	submitted(t, a, fd)
 	ctx, cancel := context.WithCancel(context.Background())
-	a.plex = cancelAfterInvite{inviter: a.plex, cancel: cancel}
+	a.plex = cancelAfterInvite{plexSharer: a.plex, cancel: cancel}
 
 	text, err := a.approve(ctx, 1, "Bob")
 	if err != nil || !strings.HasPrefix(text, "Approved.") {

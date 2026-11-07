@@ -1,20 +1,23 @@
 # homelab-bot
 
-A Discord bot for a self-hosted media server: access requests, Seerr issue reports with one-click fixes, and a download queue for members.
+A Discord bot for a self-hosted media server: access requests, Seerr issue reports with one-click fixes, and a status card for the whole stack.
 
 ## Overview
 
-homelab-bot relays Seerr issue reports into a Discord channel, with buttons that let an admin replace a bad file in one click: the release behind the file is blocklisted, the file deleted and a new one searched for in Sonarr or Radarr. New members ask for access from a panel in the server, and an approver onboards them with one click: a Plex invite, the media role and a welcome message. Members can also check what qBittorrent is downloading with `/queue`. It is for people who run Seerr, Sonarr, Radarr and qBittorrent for a small Discord community, and it ships as a single static binary, usually run with Docker Compose.
+homelab-bot relays Seerr issue reports into a Discord channel, with buttons that let an admin replace a bad file in one click: the release behind the file is blocklisted, the file deleted and a new one searched for in Sonarr or Radarr. New members ask for access from a panel in the server, and an approver onboards them with one click: a Plex invite, the media role and a welcome message. When an onboarded member leaves or loses the media role, approvers are asked whether to remove their Plex access. Members can check what qBittorrent is downloading with `/queue`, and how everything is doing with `/status`. It is for people who run Seerr, Sonarr, Radarr and qBittorrent for a small Discord community, and it ships as a single static binary, usually run with Docker Compose.
 
 ## Features
 
 * **Access requests**: members press a button and give their Plex account; approvers approve or deny it in a private channel.
 * **Onboarding**: approving sends the Plex invite for every library, gives the media role and DMs the member how to get started.
+* **Offboarding**: when an onboarded member leaves the server or loses the media role, approvers are asked whether to remove their Plex access.
 * **Issue relay**: each Seerr issue becomes one post in the support channel, kept up to date as it is commented on, resolved and reopened.
 * **Replace**: an admin-only button that blocklists the current release, deletes the file and starts a search, after a confirmation that lists exactly what will change.
 * **Episode picker**: for an issue about a whole season or show, the admin picks the episodes or seasons to replace.
 * **Resolve**: an admin-only button that resolves the issue in Seerr.
 * **`/queue`**: shows members what is downloading, stalled, queued or stopped, visible only to them.
+* **`/status`**: a card showing Plex, Seerr, qBittorrent, Sonarr, Radarr, free storage and, optionally, the monitors on an Uptime Kuma status page.
+* **`/help`**: lists the commands and buttons the member may use, and nothing else.
 * **Health check**: `GET /healthz`, plus a `-healthcheck` flag for container health checks.
 * **Pure Go**: no CGO, one static binary, with SQLite through `modernc.org/sqlite`.
 * **Outbound only**: connects to Discord over the gateway; the only listener is the webhook for Seerr on your own network.
@@ -46,7 +49,7 @@ cp .env.example .env
 make run
 ```
 
-It registers `/queue` and `/access-panel` in your server, connects to Discord and listens for Seerr on `LISTEN_ADDR`. Point Seerr's webhook at it as described in [Seerr webhook](#seerr-webhook).
+It registers `/help`, `/queue`, `/status` and `/access-panel` in your server, connects to Discord and listens for Seerr on `LISTEN_ADDR`. Point Seerr's webhook at it as described in [Seerr webhook](#seerr-webhook).
 
 ```sh
 homelab-bot -version        # print the version
@@ -63,7 +66,7 @@ Settings come from environment variables, loaded from `.env` if it exists. Varia
 | `DISCORD_GUILD_ID` | | | The server the bot serves |
 | `DISCORD_SUPPORT_CHANNEL_ID` | | | Channel for issue posts |
 | `DISCORD_ADMIN_ROLE_ID` | | | Role that may press Replace and Resolve |
-| `DISCORD_MEDIA_ROLE_ID` | | | Role that may use `/queue` (the admin role may too), given to approved members |
+| `DISCORD_MEDIA_ROLE_ID` | | | Role that may use `/queue` and `/status` (the admin role may too), given to approved members |
 | `DISCORD_ACCESS_CHANNEL_ID` | | | Private channel where access requests are posted for approvers |
 | `DISCORD_APPROVER_ROLE_ID` | | | Role that may approve and deny access requests |
 | `SEERR_URL` | | | Seerr base URL |
@@ -78,6 +81,7 @@ Settings come from environment variables, loaded from `.env` if it exists. Varia
 | `RADARR_API_KEY` | | | Radarr API key |
 | `QBIT_URL` | | | qBittorrent Web UI base URL |
 | `QBIT_API_KEY` | | | qBittorrent Web UI API key |
+| `KUMA_STATUS_URL` | | | Optional. An Uptime Kuma status page, such as `https://kuma.example.com/status/homelab`, whose monitors `/status` shows |
 | `LISTEN_ADDR` | | `:8080` | Address for the Seerr webhook and `/healthz` |
 | `PORT` | | `8080` | Docker Compose only: host port mapped to the listener |
 | `DB_PATH` | | `data/homelab-bot.db` | SQLite database file |
@@ -85,7 +89,7 @@ Settings come from environment variables, loaded from `.env` if it exists. Varia
 | | `-version` | | Print the version and exit |
 | | `-healthcheck` | | Request `/healthz` on the local listener (port from `LISTEN_ADDR`, read from the environment or `.env`) and exit 0 or 1 |
 
-The Discord bot needs the `bot` and `applications.commands` scopes. In the support and access channels, and wherever `/access-panel` is run, it needs View Channel, Send Messages, Embed Links and Read Message History, and in the server Manage Roles, with its own role above the media role so it can hand that out. It uses only the Guilds gateway intent.
+The Discord bot needs the `bot` and `applications.commands` scopes. In the support and access channels, and wherever `/access-panel` is run, it needs View Channel, Send Messages, Embed Links and Read Message History, and in the server Manage Roles, with its own role above the media role so it can hand that out. It uses the Guilds and Server Members gateway intents; Server Members is privileged, so turn it on under Bot in the Discord developer portal.
 
 ### Docker
 
@@ -113,7 +117,28 @@ A failed role or DM is noted on the request post, to be done by hand. Denying a 
 
 Seerr needs no setup from the bot if its Plex sign-in for new users is enabled: once members accept the invite, they sign in to Seerr with Plex. Libraries added to Plex later aren't shared with existing members automatically.
 
+### Removing access
+
+The bot remembers the Plex share each approval creates. When that member leaves the server, or loses the media role, it posts a **Remove Plex access?** card to `DISCORD_ACCESS_CHANNEL_ID` with **Remove access** and **Keep** buttons for approvers. Nothing changes in Plex until an approver presses one. Remove access stops sharing the server with that account, whether or not they had accepted the invite; Keep leaves it, and the member is asked about again if they leave later, or lose the media role after getting it back. Once removed, they can request access again.
+
+Members approved before the bot recorded shares, or added to Plex some other way, aren't tracked: remove them by hand under Manage Library Access in Plex.
+
+### Plex settings
+
 To find the settings, take `PLEX_TOKEN` from the owner account (Plex's support article "Finding an authentication token") and `PLEX_SERVER_ID` from `machineIdentifier` at `http://<plex-host>:32400/identity`. The invite goes through plex.tv's sharing API, which Plex doesn't document and may change.
+
+## Status
+
+`/status` shows a card, visible only to the member who ran it, with a Refresh button:
+
+* **Plex**: online or offline as plex.tv sees the server, and its version.
+* **Seerr**: requests waiting for approval, approved requests not yet available, and open issues.
+* **qBittorrent**: download and upload speed, and whether it is firewalled or disconnected.
+* **Sonarr** and **Radarr**: items in the queue and their first health warning.
+* **Storage**: free space on the largest volume Sonarr sees (Radarr's if Sonarr is down).
+* **Uptime Kuma**: with `KUMA_STATUS_URL` set, one field per group on that status page, with how many monitors are up, which are down and the group's uptime over 24 hours. Create a status page in Kuma with the monitors you want on the card; the bot reads its public JSON, so it needs no Kuma credentials. Kuma caches that JSON for up to five minutes.
+
+Each source has 10 seconds to answer. One that doesn't, or fails, shows as red without naming hosts; the full error goes to the log. The colour of the card and its first line follow the worst field.
 
 ## Seerr webhook
 

@@ -101,11 +101,20 @@ func (b *Bot) accessComponent(e *events.ComponentInteractionCreate, id string) {
 		run func(context.Context, int, string) (string, error)
 		arg string
 	)
+	onPost := func(f func(context.Context, int, string, discord.Message) (string, error)) func(context.Context, int, string) (string, error) {
+		return func(ctx context.Context, id int, approver string) (string, error) {
+			return f(ctx, id, approver, e.Message)
+		}
+	}
 	switch {
 	case strings.HasPrefix(id, idAccessApprove):
 		run, arg = b.access.approve, strings.TrimPrefix(id, idAccessApprove)
 	case strings.HasPrefix(id, idAccessDeny):
 		run, arg = b.access.deny, strings.TrimPrefix(id, idAccessDeny)
+	case strings.HasPrefix(id, idShareRemove):
+		run, arg = onPost(b.access.removeShare), strings.TrimPrefix(id, idShareRemove)
+	case strings.HasPrefix(id, idShareKeep):
+		run, arg = onPost(b.access.keepShare), strings.TrimPrefix(id, idShareKeep)
 	default:
 		b.ephemeral(e.CreateMessage, "Unknown button.")
 		return

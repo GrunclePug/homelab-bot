@@ -47,6 +47,14 @@ func TestLoadDefaults(t *testing.T) {
 	if c.GuildID.String() != "100000000000000001" {
 		t.Errorf("guild = %s", c.GuildID)
 	}
+	if c.KumaStatusURL != "" {
+		t.Errorf("Kuma on by default: %q", c.KumaStatusURL)
+	}
+	env := full()
+	env["KUMA_STATUS_URL"] = "https://kuma.example/status/home"
+	if c, err := Load(lookup(env)); err != nil || c.KumaStatusURL != "https://kuma.example/status/home" {
+		t.Errorf("Kuma: %q, %v", c.KumaStatusURL, err)
+	}
 }
 
 func TestLoadErrors(t *testing.T) {
@@ -63,6 +71,7 @@ func TestLoadErrors(t *testing.T) {
 		{name: "bad level", set: map[string]string{"LOG_LEVEL": "loud"}, want: []string{"LOG_LEVEL must be"}},
 		{name: "bad public url", set: map[string]string{"SEERR_PUBLIC_URL": "seerr.example"}, want: []string{"SEERR_PUBLIC_URL must be"}},
 		{name: "missing plex", drop: []string{"PLEX_TOKEN"}, want: []string{"missing PLEX_TOKEN"}},
+		{name: "bad kuma", set: map[string]string{"KUMA_STATUS_URL": "https://kuma.example/dashboard"}, want: []string{"KUMA_STATUS_URL must be"}},
 		{name: "bad listen", set: map[string]string{"LISTEN_ADDR": "8080"}, want: []string{"LISTEN_ADDR must be host:port"}},
 		{name: "several", drop: []string{"RADARR_API_KEY"}, set: map[string]string{"QBIT_URL": "ftp://x"},
 			want: []string{"missing RADARR_API_KEY", "QBIT_URL must be"}},

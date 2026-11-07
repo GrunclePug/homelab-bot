@@ -35,7 +35,22 @@ type AccessRequest struct {
 	CreatedAt time.Time
 	DecidedAt time.Time
 	InvitedAt time.Time // zero until the Plex invite has gone out
+
+	// ShareID is the plex.tv share the approval created; 0 if unknown,
+	// for example for approvals made before it was recorded.
+	ShareID    int
+	ShareState string
 }
+
+// Share states of an approved request: what is being done about its Plex
+// share once the member leaves or loses the media role.
+const (
+	ShareActive   = ""         // nothing to do
+	ShareAsked    = "asked"    // approvers were asked to remove or keep it
+	ShareKept     = "kept"     // an approver chose to keep it
+	ShareRemoving = "removing" // an approver's Remove click is being acted on
+	ShareRemoved  = "removed"
+)
 
 // CreateRequest records a new pending request and returns its ID. It
 // returns ErrOpenRequest if the member already has one open.
@@ -91,7 +106,7 @@ func (s *Store) OpenRequest(ctx context.Context, userID string) (bool, error) {
 }
 
 const requestColumns = `id, user_id, user_name, plex, note, status, channel_id, message_id,
-	decided_by, created_at, decided_at, invited_at`
+	decided_by, created_at, decided_at, invited_at, plex_share_id, share_state`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -101,7 +116,7 @@ func scanRequest(row scanner) (AccessRequest, error) {
 		created, decided, invited string
 	)
 	err := row.Scan(&r.ID, &r.UserID, &r.UserName, &r.Plex, &r.Note, &r.Status, &r.ChannelID, &r.MessageID,
-		&r.DecidedBy, &created, &decided, &invited)
+		&r.DecidedBy, &created, &decided, &invited, &r.ShareID, &r.ShareState)
 	if err != nil {
 		return AccessRequest{}, err
 	}
@@ -155,10 +170,11 @@ func (s *Store) Processing(ctx context.Context) ([]AccessRequest, error) {
 	return out, nil
 }
 
-// MarkInvited records that the Plex invite for a request went out.
-func (s *Store) MarkInvited(ctx context.Context, id int) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE access_request SET invited_at = ? WHERE id = ?",
-		time.Now().UTC().Format(time.RFC3339), id)
+// MarkInvited records that the Plex invite for a request went out, and
+// the plex.tv share it created, or 0 if that isn't known.
+func (s *Store) MarkInvited(ctx context.Context, id, shareID int) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE access_request SET invited_at = ?, plex_share_id = ? WHERE id = ?",
+		time.Now().UTC().Format(time.RFC3339), shareID, id)
 	if err != nil {
 		return fmt.Errorf("mark access request %d invited: %w", id, err)
 	}
@@ -200,4 +216,68 @@ func (s *Store) Decide(ctx context.Context, id int, status, decidedBy, plex stri
 		return fmt.Errorf("decide access request %d: checkpoint: %w", id, err)
 	}
 	return nil
+}
+
+// Share returns a member's newest approved request with a Plex share that
+// hasn't been removed. ok is false if there is none.
+func (s *Store) Share(ctx context.Context, userID string) (AccessRequest, bool, error) {
+	r, err := scanRequest(s.db.QueryRowContext(ctx,
+		"SELECT "+requestColumns+` FROM access_request
+		 WHERE user_id = ? AND status = ? AND plex_share_id > 0 AND share_state != ?
+		 ORDER BY id DESC LIMIT 1`,
+		userID, StatusApproved, ShareRemoved))
+	if errors.Is(err, sql.ErrNoRows) {
+		return AccessRequest{}, false, nil
+	}
+	if err != nil {
+		return AccessRequest{}, false, fmt.Errorf("get plex share of member %s: %w", userID, err)
+	}
+	return r, true, nil
+}
+
+// SetShareState moves a request's share from one of the states in from to
+// to, and reports whether it was in one of them, so two events or clicks
+// can't both act on it.
+func (s *Store) SetShareState(ctx context.Context, id int, to string, from ...string) (bool, error) {
+	if len(from) == 0 {
+		return false, errors.New("set share state: no from state")
+	}
+	args := []any{to, id}
+	for _, f := range from {
+		args = append(args, f)
+	}
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE access_request SET share_state = ? WHERE id = ? AND share_state IN (?"+
+			strings.Repeat(", ?", len(from)-1)+")", args...)
+	if err != nil {
+		return false, fmt.Errorf("set share state of access request %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("set share state of access request %d: %w", id, err)
+	}
+	return n == 1, nil
+}
+
+// Removing lists the requests whose share an approver's Remove click was
+// acting on, for example when the bot stopped halfway through.
+func (s *Store) Removing(ctx context.Context) ([]AccessRequest, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT "+requestColumns+" FROM access_request WHERE share_state = ? ORDER BY id", ShareRemoving)
+	if err != nil {
+		return nil, fmt.Errorf("list access requests being removed: %w", err)
+	}
+	defer rows.Close()
+	var out []AccessRequest
+	for rows.Next() {
+		r, err := scanRequest(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list access requests being removed: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list access requests being removed: %w", err)
+	}
+	return out, nil
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/disgoorg/snowflake/v2"
+
+	"github.com/grunclepug/homelab-bot/internal/kuma"
 )
 
 // Config holds every setting the bot needs.
@@ -38,6 +40,8 @@ type Config struct {
 
 	QbitURL    string
 	QbitAPIKey string
+
+	KumaStatusURL string // optional
 
 	ListenAddr string
 	DBPath     string
@@ -124,6 +128,13 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 
 	c.QbitURL = baseURL("QBIT_URL")
 	c.QbitAPIKey = get("QBIT_API_KEY")
+
+	c.KumaStatusURL = optional("KUMA_STATUS_URL", "")
+	if c.KumaStatusURL != "" {
+		if _, _, err := kuma.ParsePageURL(c.KumaStatusURL); err != nil {
+			invalid = append(invalid, "KUMA_STATUS_URL must be an Uptime Kuma status page address, such as https://kuma.example.com/status/homelab")
+		}
+	}
 
 	c.ListenAddr = optional("LISTEN_ADDR", DefaultListenAddr)
 	if _, _, err := net.SplitHostPort(c.ListenAddr); err != nil {

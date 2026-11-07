@@ -1,5 +1,5 @@
 // Package discord runs the Discord side of the bot: the gateway session,
-// the /queue command, the issue posts and their buttons.
+// the slash commands, the issue posts, access requests and their buttons.
 package discord
 
 import (
@@ -55,6 +55,7 @@ type Bot struct {
 	qbit    *qbit.Client
 	relay   *relay
 	access  *access
+	sources StatusSources
 	drafts  *draftStore
 	pending *pendingStore
 	log     *slog.Logger
@@ -103,9 +104,10 @@ func (b *Bot) Drain(ctx context.Context) error {
 }
 
 // New builds the bot. It doesn't connect until Start.
-func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *qbit.Client, pc *plex.Client, log *slog.Logger) (*Bot, error) {
+func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *qbit.Client, pc *plex.Client, sources StatusSources, log *slog.Logger) (*Bot, error) {
 	b := &Bot{
 		cfg:     cfg,
+		sources: sources,
 		seerr:   sc,
 		replace: rs,
 		qbit:    qc,
@@ -122,12 +124,15 @@ func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *
 		// At debug level disgo logs every REST body, which includes the
 		// member's full email in the review step and interaction tokens.
 		bot.WithLogger(slog.New(atLeast{Handler: log.Handler(), min: slog.LevelInfo}).With("component", "disgo")),
-		bot.WithGatewayConfigOpts(gateway.WithIntents(gateway.IntentGuilds)),
+		// Guild members is a privileged intent, for leaves and role changes.
+		bot.WithGatewayConfigOpts(gateway.WithIntents(gateway.IntentGuilds, gateway.IntentGuildMembers)),
 		bot.WithEventManagerConfigOpts(bot.WithAsyncEventsEnabled()),
 		bot.WithRestConfigOpts(rest.WithDefaultAllowedMentions(none)),
 		bot.WithEventListenerFunc(b.onCommand),
 		bot.WithEventListenerFunc(b.onComponent),
 		bot.WithEventListenerFunc(b.onModal),
+		bot.WithEventListenerFunc(b.onMemberLeave),
+		bot.WithEventListenerFunc(b.onMemberUpdate),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create discord client: %w", err)
@@ -175,8 +180,16 @@ func (h atLeast) WithGroup(name string) slog.Handler {
 // commands are the guild's slash commands.
 var commands = []discord.ApplicationCommandCreate{
 	discord.SlashCommandCreate{
+		Name:        "help",
+		Description: "Show what you can do with this bot",
+	},
+	discord.SlashCommandCreate{
 		Name:        "queue",
 		Description: "Show what's downloading and what's waiting",
+	},
+	discord.SlashCommandCreate{
+		Name:        "status",
+		Description: "Show how the media server and everything behind it is doing",
 	},
 	discord.SlashCommandCreate{
 		Name:        "access-panel",
@@ -198,6 +211,9 @@ func (b *Bot) Start(ctx context.Context) error {
 	// Not fatal: the requests stay as they are and can be fixed by hand.
 	if err := b.access.recoverInterrupted(ctx); err != nil {
 		b.log.Error("recover interrupted access requests", "err", err)
+	}
+	if err := b.access.recoverRemoving(ctx); err != nil {
+		b.log.Error("recover interrupted plex share removals", "err", err)
 	}
 	return nil
 }
@@ -268,8 +284,12 @@ func (b *Bot) onCommand(e *events.ApplicationCommandInteractionCreate) {
 		return
 	}
 	switch name := data.CommandName(); name {
+	case "help":
+		b.help(e)
 	case "queue":
 		b.queue(e)
+	case "status":
+		b.status(e)
 	case "access-panel":
 		b.accessPanel(e)
 	default:
@@ -282,5 +302,32 @@ func (b *Bot) onCommand(e *events.ApplicationCommandInteractionCreate) {
 func (b *Bot) ephemeral(create func(discord.MessageCreate, ...rest.RequestOpt) error, text string) {
 	if err := create(discord.NewMessageCreate().WithContent(text).WithEphemeral(true)); err != nil {
 		b.log.Error("answer interaction", "err", err)
+	}
+}
+
+// onMemberLeave asks approvers about the Plex access of a member who left.
+func (b *Bot) onMemberLeave(e *events.GuildMemberLeave) {
+	if e.GuildID != b.cfg.GuildID || !b.enter() {
+		return
+	}
+	defer b.handlers.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
+	defer cancel()
+	if err := b.access.memberLeft(ctx, e.User.ID); err != nil {
+		b.log.Error("member left", "err", err)
+	}
+}
+
+// onMemberUpdate asks approvers about the Plex access of a member who lost
+// the media role.
+func (b *Bot) onMemberUpdate(e *events.GuildMemberUpdate) {
+	if e.GuildID != b.cfg.GuildID || !b.enter() {
+		return
+	}
+	defer b.handlers.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
+	defer cancel()
+	if err := b.access.memberChanged(ctx, e.Member.User.ID, e.Member.RoleIDs); err != nil {
+		b.log.Error("member changed", "err", err)
 	}
 }

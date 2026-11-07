@@ -44,7 +44,7 @@ func TestPosts(t *testing.T) {
 	}
 	defer s.Close()
 	var version int
-	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 3 {
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 4 {
 		t.Errorf("user_version = %d, %v", version, err)
 	}
 	if _, ok, _ := s.Post(ctx, 1); !ok {

@@ -20,6 +20,7 @@ import (
 	"github.com/grunclepug/homelab-bot/internal/arr"
 	"github.com/grunclepug/homelab-bot/internal/config"
 	"github.com/grunclepug/homelab-bot/internal/discord"
+	"github.com/grunclepug/homelab-bot/internal/kuma"
 	"github.com/grunclepug/homelab-bot/internal/plex"
 	"github.com/grunclepug/homelab-bot/internal/qbit"
 	"github.com/grunclepug/homelab-bot/internal/replace"
@@ -101,11 +102,19 @@ func run() error {
 	defer st.Close()
 
 	sc := seerr.NewClient(cfg.SeerrURL, cfg.SeerrAPIKey)
-	rs := replace.Service{
-		Sonarr: arr.NewSonarr(cfg.SonarrURL, cfg.SonarrAPIKey),
-		Radarr: arr.NewRadarr(cfg.RadarrURL, cfg.RadarrAPIKey),
-	}
+	sonarr := arr.NewSonarr(cfg.SonarrURL, cfg.SonarrAPIKey)
+	radarr := arr.NewRadarr(cfg.RadarrURL, cfg.RadarrAPIKey)
+	rs := replace.Service{Sonarr: sonarr, Radarr: radarr}
 	qc := qbit.NewClient(cfg.QbitURL, cfg.QbitAPIKey)
+	pc := plex.NewClient(plex.DefaultBaseURL, cfg.PlexToken, cfg.PlexServerID)
+	sources := discord.StatusSources{Plex: pc, Seerr: sc, Sonarr: sonarr, Radarr: radarr, Qbit: qc}
+	if cfg.KumaStatusURL != "" {
+		kc, err := kuma.NewClient(cfg.KumaStatusURL)
+		if err != nil {
+			return err
+		}
+		sources.Kuma = kc
+	}
 
 	bot, err := discord.New(discord.Config{
 		Token:            cfg.DiscordToken,
@@ -116,7 +125,7 @@ func run() error {
 		AccessChannelID:  cfg.AccessChannelID,
 		ApproverRoleID:   cfg.ApproverRoleID,
 		SeerrPublicURL:   cfg.SeerrPublicURL,
-	}, st, sc, rs, qc, plex.NewClient(plex.DefaultBaseURL, cfg.PlexToken, cfg.PlexServerID), log)
+	}, st, sc, rs, qc, pc, sources, log)
 	if err != nil {
 		return err
 	}

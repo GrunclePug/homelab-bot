@@ -13,6 +13,7 @@ import (
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 
+	"github.com/grunclepug/homelab-bot/internal/plex"
 	"github.com/grunclepug/homelab-bot/internal/store"
 )
 
@@ -45,8 +46,10 @@ type accessREST interface {
 	CreateDMChannel(userID snowflake.ID, opts ...rest.RequestOpt) (*discord.DMChannel, error)
 }
 
-type inviter interface {
-	Invite(ctx context.Context, who string) error
+// plexSharer invites accounts to the Plex server and removes their share.
+type plexSharer interface {
+	Invite(ctx context.Context, who string) (int, error)
+	RemoveShare(ctx context.Context, id int) error
 }
 
 type accessStore interface {
@@ -57,8 +60,11 @@ type accessStore interface {
 	Request(ctx context.Context, id int) (store.AccessRequest, bool, error)
 	Processing(ctx context.Context) ([]store.AccessRequest, error)
 	Claim(ctx context.Context, id int, from, to, by string) (bool, error)
-	MarkInvited(ctx context.Context, id int) error
+	MarkInvited(ctx context.Context, id, shareID int) error
 	Decide(ctx context.Context, id int, status, decidedBy, plex string) error
+	Share(ctx context.Context, userID string) (store.AccessRequest, bool, error)
+	SetShareState(ctx context.Context, id int, to string, from ...string) (bool, error)
+	Removing(ctx context.Context) ([]store.AccessRequest, error)
 }
 
 // access runs access requests: members ask, approvers approve or deny,
@@ -70,7 +76,7 @@ type access struct {
 	seerrURL  string // public Seerr URL for the welcome DM; may be empty
 	rest      accessREST
 	store     accessStore
-	plex      inviter
+	plex      plexSharer
 	log       *slog.Logger
 }
 
@@ -184,16 +190,24 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 		return "", errors.Join(fmt.Errorf("access request %d: bad user ID: %w", id, err), a.release(fin, id))
 	}
 
-	if err := a.plex.Invite(ctx, r.Plex); err != nil {
+	shareID, err := a.plex.Invite(ctx, r.Plex)
+	note := ""
+	if errors.Is(err, plex.ErrShareUnknown) {
+		// The invite went out; only removing it later needs the ID.
+		a.log.Warn("plex share ID unknown", "request", id, "err", err)
+		note = "Couldn't find the Plex share, so if they leave, remove their Plex access by hand"
+		err = nil
+	}
+	if err != nil {
 		a.log.Warn("plex invite failed", "request", id, "err", err)
 		return a.inviteFailed(fin, *r, userID, approver, err)
 	}
-	if err := a.store.MarkInvited(fin, id); err != nil {
+	if err := a.store.MarkInvited(fin, id, shareID); err != nil {
 		// Carry on: the member is invited. Only a restart before the end
 		// would now reopen the request instead of finishing it.
 		a.log.Error("record plex invite", "request", id, "err", err)
 	}
-	return a.onboard(fin, *r, userID, approver, "")
+	return a.onboard(fin, *r, userID, approver, note)
 }
 
 // onboard finishes an approval once the Plex invite has gone out: media
@@ -355,7 +369,7 @@ func (a *access) welcome() string {
 		"**You're in!** Your request for media server access was approved.",
 		"1. Accept the Plex invite. It's in your email, or under Settings, Manage Library Access, at https://app.plex.tv.",
 		seerr,
-		"3. Use `/queue` in the server to see what's downloading.",
+		"3. Use `/help` in the server to see what else you can do, such as `/queue` for what's downloading.",
 	}, "\n")
 }
 

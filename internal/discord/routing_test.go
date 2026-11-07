@@ -89,7 +89,7 @@ func commandEvent(t *testing.T, name string, roles []snowflake.ID, got *[]reply)
 // member without the role it needs, before doing anything else.
 func TestComponentPermissions(t *testing.T) {
 	adminOnly := []string{"replace:7", "resolve:7", "pick:tok:0", "confirm:tok", "cancel:tok"}
-	approverOnly := []string{"access:approve:1", "access:deny:1"}
+	approverOnly := []string{"access:approve:1", "access:deny:1", "access:unshare:1", "access:keep:1"}
 	tests := []struct {
 		name  string
 		roles []snowflake.ID
