@@ -1,13 +1,15 @@
 # homelab-bot
 
-A Discord bot for a self-hosted media server: Seerr issue reports with one-click fixes, and a download queue for members.
+A Discord bot for a self-hosted media server: access requests, Seerr issue reports with one-click fixes, and a download queue for members.
 
 ## Overview
 
-homelab-bot relays Seerr issue reports into a Discord channel, with buttons that let an admin replace a bad file in one click: the release behind the file is blocklisted, the file deleted and a new one searched for in Sonarr or Radarr. Members can also check what qBittorrent is downloading with `/queue`. It is for people who run Seerr, Sonarr, Radarr and qBittorrent for a small Discord community, and it ships as a single static binary, usually run with Docker Compose.
+homelab-bot relays Seerr issue reports into a Discord channel, with buttons that let an admin replace a bad file in one click: the release behind the file is blocklisted, the file deleted and a new one searched for in Sonarr or Radarr. New members ask for access from a panel in the server, and an approver onboards them with one click: a Plex invite, the media role and a welcome message. Members can also check what qBittorrent is downloading with `/queue`. It is for people who run Seerr, Sonarr, Radarr and qBittorrent for a small Discord community, and it ships as a single static binary, usually run with Docker Compose.
 
 ## Features
 
+* **Access requests**: members press a button and give their Plex account; approvers approve or deny it in a private channel.
+* **Onboarding**: approving sends the Plex invite for every library, gives the media role and DMs the member how to get started.
 * **Issue relay**: each Seerr issue becomes one post in the support channel, kept up to date as it is commented on, resolved and reopened.
 * **Replace**: an admin-only button that blocklists the current release, deletes the file and starts a search, after a confirmation that lists exactly what will change.
 * **Episode picker**: for an issue about a whole season or show, the admin picks the episodes or seasons to replace.
@@ -61,10 +63,15 @@ Settings come from environment variables, loaded from `.env` if it exists. Varia
 | `DISCORD_GUILD_ID` | | | The server the bot serves |
 | `DISCORD_SUPPORT_CHANNEL_ID` | | | Channel for issue posts |
 | `DISCORD_ADMIN_ROLE_ID` | | | Role that may press Replace and Resolve |
-| `DISCORD_MEDIA_ROLE_ID` | | | Role that may use `/queue` (the admin role may too) |
+| `DISCORD_MEDIA_ROLE_ID` | | | Role that may use `/queue` (the admin role may too), given to approved members |
+| `DISCORD_ACCESS_CHANNEL_ID` | | | Private channel where access requests are posted for approvers |
+| `DISCORD_APPROVER_ROLE_ID` | | | Role that may approve and deny access requests |
 | `SEERR_URL` | | | Seerr base URL |
 | `SEERR_API_KEY` | | | Seerr API key |
 | `SEERR_WEBHOOK_SECRET` | | | Value Seerr sends in the `Authorization` header |
+| `SEERR_PUBLIC_URL` | | | Optional. The Seerr address members use, shown in the welcome DM |
+| `PLEX_TOKEN` | | | The Plex server owner's token, for sending invites |
+| `PLEX_SERVER_ID` | | | The Plex server's machine identifier |
 | `SONARR_URL` | | | Sonarr base URL |
 | `SONARR_API_KEY` | | | Sonarr API key |
 | `RADARR_URL` | | | Radarr base URL |
@@ -79,7 +86,7 @@ Settings come from environment variables, loaded from `.env` if it exists. Varia
 | | `-version` | | Print the version and exit |
 | | `-healthcheck` | | Request `/healthz` on the local listener and exit 0 or 1 |
 
-The Discord bot needs the `bot` and `applications.commands` scopes, and in the support channel the View Channel, Send Messages, Embed Links and Read Message History permissions. It uses only the Guilds gateway intent.
+The Discord bot needs the `bot` and `applications.commands` scopes. In the support and access channels it needs View Channel, Send Messages, Embed Links and Read Message History, and in the server Manage Roles, with its own role above the media role so it can hand that out. It uses only the Guilds gateway intent.
 
 ### Docker
 
@@ -90,6 +97,24 @@ docker compose up -d --build
 ```
 
 The container runs as the distroless non-root user (UID 65532), so `data/` must be writable by that UID. The database lives in `data/homelab-bot.db`. Compose maps host port `${PORT}` (default `8080`) to the listener, and its health check runs `/homelab-bot -healthcheck`.
+
+## Access requests
+
+Run `/access-panel` in the channel where new members should find it, for example a welcome channel, and pin the message it posts. The command is visible only to members with Manage Server, and only the admin role may use it.
+
+A member presses **Request access** and fills in their Plex email or username, plus an optional note. The request is posted to `DISCORD_ACCESS_CHANNEL_ID` with **Approve** and **Deny** buttons, which only the approver role may press. Keep that channel private: it shows the email addresses members type.
+
+Approving a request:
+
+1. Invites the Plex account to every library on the server. If the invite fails, nothing else happens and the request stays open, so it can be approved again once the account is fixed.
+2. Gives the member the media role.
+3. DMs the member how to accept the invite and sign in to Seerr.
+
+A failed role or DM is noted on the request post, to be done by hand. Denying a request DMs the member a short note, and they may ask again later. A member can have one open request at a time.
+
+Seerr needs no setup from the bot if its Plex sign-in for new users is enabled: once members accept the invite, they sign in to Seerr with Plex. Libraries added to Plex later aren't shared with existing members automatically.
+
+To find the settings, take `PLEX_TOKEN` from the owner account (Plex's support article "Finding an authentication token") and `PLEX_SERVER_ID` from `machineIdentifier` at `http://<plex-host>:32400/identity`. The invite goes through plex.tv's sharing API, which Plex doesn't document and may change.
 
 ## Seerr webhook
 

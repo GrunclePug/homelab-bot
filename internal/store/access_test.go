@@ -1,0 +1,67 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"testing"
+)
+
+func TestAccessRequests(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	id, err := s.CreateRequest(ctx, AccessRequest{UserID: "1", UserName: "ann", Plex: "ann@example.com", Note: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRequest(ctx, AccessRequest{UserID: "1", UserName: "ann", Plex: "x"}); !errors.Is(err, ErrOpenRequest) {
+		t.Errorf("second open request: err = %v, want ErrOpenRequest", err)
+	}
+	if open, _ := s.OpenRequest(ctx, "1"); !open {
+		t.Error("OpenRequest = false")
+	}
+	if err := s.SetRequestPost(ctx, id, "10", "20"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only one of two clicks gets the request.
+	first, err1 := s.Claim(ctx, id, StatusPending, StatusProcessing)
+	second, err2 := s.Claim(ctx, id, StatusPending, StatusProcessing)
+	if err := errors.Join(err1, err2); err != nil || !first || second {
+		t.Fatalf("claims = %v, %v (%v)", first, second, err)
+	}
+	if _, err := s.CreateRequest(ctx, AccessRequest{UserID: "1", Plex: "x"}); !errors.Is(err, ErrOpenRequest) {
+		t.Error("a processing request should still count as open")
+	}
+
+	if err := s.Decide(ctx, id, StatusDenied, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	r, ok, err := s.Request(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("Request: %v, %v", ok, err)
+	}
+	if r.Status != StatusDenied || r.DecidedBy != "bob" || r.DecidedAt.IsZero() || r.MessageID != "20" || r.Plex != "ann@example.com" {
+		t.Errorf("request = %+v", r)
+	}
+	if open, _ := s.OpenRequest(ctx, "1"); open {
+		t.Error("closed request still open")
+	}
+
+	// After a denial the member may ask again.
+	id2, err := s.CreateRequest(ctx, AccessRequest{UserID: "1", UserName: "ann", Plex: "ann2"})
+	if err != nil || id2 == id {
+		t.Fatalf("new request after denial: %d, %v", id2, err)
+	}
+	if err := s.DeleteRequest(ctx, id2); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.Request(ctx, id2); ok {
+		t.Error("deleted request still there")
+	}
+}

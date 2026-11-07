@@ -20,10 +20,16 @@ type Config struct {
 	SupportChannelID snowflake.ID
 	AdminRoleID      snowflake.ID
 	MediaRoleID      snowflake.ID
+	AccessChannelID  snowflake.ID
+	ApproverRoleID   snowflake.ID
 
 	SeerrURL           string
 	SeerrAPIKey        string
 	SeerrWebhookSecret string
+	SeerrPublicURL     string
+
+	PlexToken    string
+	PlexServerID string
 
 	SonarrURL    string
 	SonarrAPIKey string
@@ -95,10 +101,22 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	c.SupportChannelID = id("DISCORD_SUPPORT_CHANNEL_ID")
 	c.AdminRoleID = id("DISCORD_ADMIN_ROLE_ID")
 	c.MediaRoleID = id("DISCORD_MEDIA_ROLE_ID")
+	c.AccessChannelID = id("DISCORD_ACCESS_CHANNEL_ID")
+	c.ApproverRoleID = id("DISCORD_APPROVER_ROLE_ID")
 
 	c.SeerrURL = baseURL("SEERR_URL")
 	c.SeerrAPIKey = get("SEERR_API_KEY")
 	c.SeerrWebhookSecret = get("SEERR_WEBHOOK_SECRET")
+	if v := optional("SEERR_PUBLIC_URL", ""); v != "" {
+		u, err := url.Parse(v)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			invalid = append(invalid, "SEERR_PUBLIC_URL must be an http or https URL")
+		}
+		c.SeerrPublicURL = strings.TrimRight(v, "/")
+	}
+
+	c.PlexToken = get("PLEX_TOKEN")
+	c.PlexServerID = get("PLEX_SERVER_ID")
 
 	c.SonarrURL = baseURL("SONARR_URL")
 	c.SonarrAPIKey = get("SONARR_API_KEY")

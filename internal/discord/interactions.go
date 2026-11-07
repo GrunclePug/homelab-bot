@@ -39,6 +39,10 @@ func (b *Bot) onComponent(e *events.ComponentInteractionCreate) {
 		return
 	}
 	id := e.Data.CustomID()
+	if strings.HasPrefix(id, "access:") {
+		b.accessComponent(e, id)
+		return
+	}
 	if !hasRole(e.Member(), b.cfg.AdminRoleID) {
 		b.ephemeral(e.CreateMessage, textAdminsOnly)
 		return

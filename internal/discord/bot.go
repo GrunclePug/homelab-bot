@@ -15,8 +15,10 @@ import (
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/gateway"
 	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/omit"
 	"github.com/disgoorg/snowflake/v2"
 
+	"github.com/grunclepug/homelab-bot/internal/plex"
 	"github.com/grunclepug/homelab-bot/internal/qbit"
 	"github.com/grunclepug/homelab-bot/internal/replace"
 	"github.com/grunclepug/homelab-bot/internal/seerr"
@@ -30,6 +32,9 @@ type Config struct {
 	SupportChannelID snowflake.ID
 	AdminRoleID      snowflake.ID
 	MediaRoleID      snowflake.ID
+	AccessChannelID  snowflake.ID
+	ApproverRoleID   snowflake.ID
+	SeerrPublicURL   string
 }
 
 // Bot is the Discord bot.
@@ -40,12 +45,13 @@ type Bot struct {
 	replace replace.Service
 	qbit    *qbit.Client
 	relay   *relay
+	access  *access
 	pending *pendingStore
 	log     *slog.Logger
 }
 
 // New builds the bot. It doesn't connect until Start.
-func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *qbit.Client, log *slog.Logger) (*Bot, error) {
+func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *qbit.Client, pc *plex.Client, log *slog.Logger) (*Bot, error) {
 	b := &Bot{
 		cfg:     cfg,
 		seerr:   sc,
@@ -66,6 +72,7 @@ func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *
 		bot.WithRestConfigOpts(rest.WithDefaultAllowedMentions(none)),
 		bot.WithEventListenerFunc(b.onCommand),
 		bot.WithEventListenerFunc(b.onComponent),
+		bot.WithEventListenerFunc(b.onModal),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create discord client: %w", err)
@@ -78,6 +85,16 @@ func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *
 		issues:  sc,
 		log:     log,
 	}
+	b.access = &access{
+		guild:     cfg.GuildID,
+		channel:   cfg.AccessChannelID,
+		mediaRole: cfg.MediaRoleID,
+		seerrURL:  cfg.SeerrPublicURL,
+		rest:      client.Rest,
+		store:     st,
+		plex:      pc,
+		log:       log,
+	}
 	return b, nil
 }
 
@@ -86,6 +103,13 @@ var commands = []discord.ApplicationCommandCreate{
 	discord.SlashCommandCreate{
 		Name:        "queue",
 		Description: "Show what's downloading and what's waiting",
+	},
+	discord.SlashCommandCreate{
+		Name:        "access-panel",
+		Description: "Post the media server access request panel in this channel",
+		// Hidden from members without Manage Server; the bot also checks
+		// for the admin role.
+		DefaultMemberPermissions: omit.NewPtr(discord.PermissionManageGuild),
 	},
 }
 
@@ -147,6 +171,8 @@ func (b *Bot) onCommand(e *events.ApplicationCommandInteractionCreate) {
 	switch name := e.SlashCommandInteractionData().CommandName(); name {
 	case "queue":
 		b.queue(e)
+	case "access-panel":
+		b.accessPanel(e)
 	default:
 		b.log.Warn("unknown command", "name", name)
 		b.ephemeral(e.CreateMessage, "Unknown command.")

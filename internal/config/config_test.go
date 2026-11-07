@@ -23,6 +23,10 @@ func full() map[string]string {
 		"QBIT_URL":                   "http://qbit.example:8080",
 		"QBIT_USERNAME":              "admin",
 		"QBIT_PASSWORD":              "pw",
+		"DISCORD_ACCESS_CHANNEL_ID":  "100000000000000005",
+		"DISCORD_APPROVER_ROLE_ID":   "100000000000000006",
+		"PLEX_TOKEN":                 "plex-token",
+		"PLEX_SERVER_ID":             "abc123",
 	}
 }
 
@@ -58,6 +62,8 @@ func TestLoadErrors(t *testing.T) {
 		{name: "bad id", set: map[string]string{"DISCORD_GUILD_ID": "abc"}, want: []string{"DISCORD_GUILD_ID must be a Discord ID"}},
 		{name: "bad url", set: map[string]string{"SONARR_URL": "sonarr:8989"}, want: []string{"SONARR_URL must be an http or https URL"}},
 		{name: "bad level", set: map[string]string{"LOG_LEVEL": "loud"}, want: []string{"LOG_LEVEL must be"}},
+		{name: "bad public url", set: map[string]string{"SEERR_PUBLIC_URL": "seerr.example"}, want: []string{"SEERR_PUBLIC_URL must be"}},
+		{name: "missing plex", drop: []string{"PLEX_TOKEN"}, want: []string{"missing PLEX_TOKEN"}},
 		{name: "bad listen", set: map[string]string{"LISTEN_ADDR": "8080"}, want: []string{"LISTEN_ADDR must be host:port"}},
 		{name: "several", drop: []string{"RADARR_API_KEY"}, set: map[string]string{"QBIT_URL": "ftp://x"},
 			want: []string{"missing RADARR_API_KEY", "QBIT_URL must be"}},

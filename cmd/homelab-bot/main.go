@@ -19,6 +19,7 @@ import (
 	"github.com/grunclepug/homelab-bot/internal/arr"
 	"github.com/grunclepug/homelab-bot/internal/config"
 	"github.com/grunclepug/homelab-bot/internal/discord"
+	"github.com/grunclepug/homelab-bot/internal/plex"
 	"github.com/grunclepug/homelab-bot/internal/qbit"
 	"github.com/grunclepug/homelab-bot/internal/replace"
 	"github.com/grunclepug/homelab-bot/internal/seerr"
@@ -107,7 +108,10 @@ func run() error {
 		SupportChannelID: cfg.SupportChannelID,
 		AdminRoleID:      cfg.AdminRoleID,
 		MediaRoleID:      cfg.MediaRoleID,
-	}, st, sc, rs, qc, log)
+		AccessChannelID:  cfg.AccessChannelID,
+		ApproverRoleID:   cfg.ApproverRoleID,
+		SeerrPublicURL:   cfg.SeerrPublicURL,
+	}, st, sc, rs, qc, plex.NewClient(plex.DefaultBaseURL, cfg.PlexToken, cfg.PlexServerID), log)
 	if err != nil {
 		return err
 	}
