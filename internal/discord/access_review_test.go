@@ -71,6 +71,9 @@ func TestRequestFormPrefill(t *testing.T) {
 	if blank.CustomID != idAccessForm || values(blank)[inputPlex] != "" {
 		t.Errorf("blank form: id %q, values %v", blank.CustomID, values(blank))
 	}
+	if td, ok := blank.Components[0].(discord.TextDisplayComponent); !ok || !strings.Contains(td.Content, "plex.tv/sign-up") {
+		t.Errorf("form doesn't open with the Plex sign-up link: %#v", blank.Components[0])
+	}
 	again := requestForm(idAccessReform, draft{Plex: "ann@example", Note: "hi"})
 	if v := values(again); again.CustomID != idAccessReform || v[inputPlex] != "ann@example" || v[inputNote] != "hi" {
 		t.Errorf("prefilled form: id %q, values %v", again.CustomID, v)

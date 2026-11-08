@@ -102,14 +102,17 @@ const (
 	textRequestSent   = "Request sent. You'll get a DM from me once an approver has looked at it."
 	textApproversOnly = "Only approvers can do that."
 	textHandled       = "This request has already been handled."
+
+	textFormIntro = "You watch in the **Plex** app, so we invite your Plex account to our server.\n" +
+		"No account yet? Make a free one at https://www.plex.tv/sign-up/ first, then come back."
 )
 
 // panelMessage is the message /access-panel posts.
 func panelMessage() discord.MessageCreate {
 	e := discord.NewEmbed().
 		WithTitle("Media server access").
-		WithDescription("Want to watch on Plex and request movies and shows? " +
-			"Press the button, tell us your Plex account, and an approver will set you up.").
+		WithDescription("Watch our movies and shows in the Plex app, and request new ones.\n\n" +
+			"Press **Request access** and give your Plex account. You'll get a DM once an approver has looked at it.").
 		WithColor(colorQueue)
 	return discord.NewMessageCreate().
 		WithEmbeds(e).
@@ -132,6 +135,7 @@ func requestForm(customID string, d draft) discord.ModalCreate {
 		noteInput = noteInput.WithValue(d.Note)
 	}
 	return discord.NewModalCreate(customID, "Request media server access").
+		AddComponents(discord.NewTextDisplay(textFormIntro)).
 		AddLabel("Plex email or username", plexInput).
 		AddLabel("Anything the approvers should know?", noteInput)
 }
