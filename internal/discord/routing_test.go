@@ -88,7 +88,7 @@ func commandEvent(t *testing.T, name string, roles []snowflake.ID, got *[]reply)
 // TestComponentPermissions checks that every privileged button refuses a
 // member without the role it needs, before doing anything else.
 func TestComponentPermissions(t *testing.T) {
-	adminOnly := []string{"replace:7", "resolve:7", "pick:tok:0", "confirm:tok", "cancel:tok"}
+	issueButtons := []string{"replace:7", "resolve:7", "pick:tok:0", "confirm:tok", "cancel:tok"}
 	approverOnly := []string{"access:approve:1", "access:deny:1", "access:unshare:1", "access:keep:1"}
 	tests := []struct {
 		name  string
@@ -96,8 +96,8 @@ func TestComponentPermissions(t *testing.T) {
 		ids   []string
 		want  string
 	}{
-		{"no roles, admin buttons", nil, adminOnly, textAdminsOnly},
-		{"approver, admin buttons", []snowflake.ID{approverRole, mediaRole}, adminOnly, textAdminsOnly},
+		{"no roles, issue buttons", nil, issueButtons, textIssueRoles},
+		{"media, issue buttons", []snowflake.ID{mediaRole}, issueButtons, textIssueRoles},
 		{"no roles, approver buttons", nil, approverOnly, textApproversOnly},
 		{"admin, approver buttons", []snowflake.ID{adminRole, mediaRole}, approverOnly, textApproversOnly},
 	}
@@ -110,6 +110,18 @@ func TestComponentPermissions(t *testing.T) {
 					t.Errorf("replies = %+v, want one %q", got, tt.want)
 				}
 			})
+		}
+	}
+}
+
+// TestApproverIssueButtons checks that approvers get past the role check
+// on the issue buttons, like admins.
+func TestApproverIssueButtons(t *testing.T) {
+	for _, roles := range [][]snowflake.ID{{approverRole}, {adminRole}} {
+		var got []reply
+		routingBot().onComponent(componentEvent(t, "cancel:tok", member, roles, &got))
+		if len(got) != 1 || got[0].typ != discord.InteractionResponseTypeUpdateMessage {
+			t.Errorf("roles %v: replies = %+v, want the cancel update", roles, got)
 		}
 	}
 }

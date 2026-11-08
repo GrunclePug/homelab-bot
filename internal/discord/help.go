@@ -57,9 +57,12 @@ func helpEmbed(r roles, support, accessChannel snowflake.ID) discord.Embed {
 			"In <#"+accessChannel.String()+">, **Approve** sends the member a Plex invite, gives them the media role and DMs them; **Deny** closes the request and tells them.",
 			"When a member leaves or loses the media role, I ask there whether to **Remove access** to Plex or **Keep** it.")
 	}
+	if r.admin || r.approver {
+		add("", "**Issues**",
+			"On issue posts in <#"+support.String()+">, **Replace** blocklists the release, deletes the file and searches for another; **Resolve** closes the issue in Seerr.")
+	}
 	if r.admin {
 		add("", "**Admins**",
-			"On issue posts in <#"+support.String()+">, **Replace** blocklists the release, deletes the file and searches for another; **Resolve** closes the issue in Seerr.",
 			"`/access-panel` posts the access request panel in the channel you run it in.")
 	}
 	return discord.NewEmbed().

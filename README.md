@@ -4,7 +4,7 @@ A Discord bot for a self-hosted media server: access requests, Seerr issue repor
 
 ## Overview
 
-homelab-bot relays Seerr issue reports into a Discord channel, with buttons that let an admin replace a bad file in one click: the release behind the file is blocklisted, the file deleted and a new one searched for in Sonarr or Radarr. New members ask for access from a panel in the server, and an approver onboards them with one click: a Plex invite, the media role and a welcome message. When an onboarded member leaves or loses the media role, approvers are asked whether to remove their Plex access. Members can check what qBittorrent is downloading with `/queue`, and how everything is doing with `/status`. It is for people who run Seerr, Sonarr, Radarr and qBittorrent for a small Discord community, and it ships as a single static binary, usually run with Docker Compose.
+homelab-bot relays Seerr issue reports into a Discord channel, with buttons that let an admin or approver replace a bad file in one click: the release behind the file is blocklisted, the file deleted and a new one searched for in Sonarr or Radarr. New members ask for access from a panel in the server, and an approver onboards them with one click: a Plex invite, the media role and a welcome message. When an onboarded member leaves or loses the media role, approvers are asked whether to remove their Plex access. Members can check what qBittorrent is downloading with `/queue`, and how everything is doing with `/status`. It is for people who run Seerr, Sonarr, Radarr and qBittorrent for a small Discord community, and it ships as a single static binary, usually run with Docker Compose.
 
 ## Features
 
@@ -12,9 +12,9 @@ homelab-bot relays Seerr issue reports into a Discord channel, with buttons that
 * **Onboarding**: approving sends the Plex invite for every library, gives the media role and DMs the member how to get started.
 * **Offboarding**: when an onboarded member leaves the server or loses the media role, approvers are asked whether to remove their Plex access.
 * **Issue relay**: each Seerr issue becomes one post in the support channel, kept up to date as it is commented on, resolved and reopened.
-* **Replace**: an admin-only button that blocklists the current release, deletes the file and starts a search, after a confirmation that lists exactly what will change.
-* **Episode picker**: for an issue about a whole season or show, the admin picks the episodes or seasons to replace.
-* **Resolve**: an admin-only button that resolves the issue in Seerr.
+* **Replace**: a button for admins and approvers that blocklists the current release, deletes the file and starts a search, after a confirmation that lists exactly what will change.
+* **Episode picker**: for an issue about a whole season or show, they pick the episodes or seasons to replace.
+* **Resolve**: a button for admins and approvers that resolves the issue in Seerr.
 * **`/queue`**: shows members what is downloading, stalled, queued or stopped, visible only to them.
 * **`/status`**: a card showing Plex, Seerr, qBittorrent, Sonarr, Radarr, free storage and, optionally, the monitors on an Uptime Kuma status page.
 * **`/help`**: lists the commands and buttons the member may use, and nothing else.
@@ -65,10 +65,10 @@ Settings come from environment variables, loaded from `.env` if it exists. Varia
 | `DISCORD_TOKEN` | | | Bot token |
 | `DISCORD_GUILD_ID` | | | The server the bot serves |
 | `DISCORD_SUPPORT_CHANNEL_ID` | | | Channel for issue posts |
-| `DISCORD_ADMIN_ROLE_ID` | | | Role that may press Replace and Resolve |
+| `DISCORD_ADMIN_ROLE_ID` | | | Role that may press Replace and Resolve, and use `/access-panel` |
 | `DISCORD_MEDIA_ROLE_ID` | | | Role that may use `/queue` and `/status` (the admin role may too), given to approved members |
 | `DISCORD_ACCESS_CHANNEL_ID` | | | Private channel where access requests are posted for approvers |
-| `DISCORD_APPROVER_ROLE_ID` | | | Role that may approve and deny access requests |
+| `DISCORD_APPROVER_ROLE_ID` | | | Role that may approve and deny access requests, and press Replace and Resolve |
 | `SEERR_URL` | | | Seerr base URL |
 | `SEERR_API_KEY` | | | Seerr API key |
 | `SEERR_WEBHOOK_SECRET` | | | Value Seerr sends in the `Authorization` header |
@@ -183,15 +183,15 @@ Pressing Replace on an issue post works out the file from the issue:
 
 * **Movie**: the Radarr movie with the issue's TMDB ID, and its file.
 * **Episode**: the Sonarr series with the issue's TVDB ID, and that episode's file.
-* **Season or whole show**: a menu, visible only to the admin, of the season's episodes or the show's seasons, plus "All of them".
+* **Season or whole show**: a menu, visible only to whoever pressed Replace, of the season's episodes or the show's seasons, plus "All of them".
 
-An episode stored in the same file as another, such as S01E01E02, is replaced together with it, since deleting the file removes both. The admin then sees what will be replaced (quality, release group and size) and confirms or cancels. Nothing changes until it is confirmed. For each file the bot then:
+An episode stored in the same file as another, such as S01E01E02, is replaced together with it, since deleting the file removes both. They then see what will be replaced (quality, release group and size) and confirms or cancels. Nothing changes until it is confirmed. For each file the bot then:
 
 1. Blocklists the release by marking its grab failed. This is the grab whose download produced the current file, or the most recent grab if none matches. Without any grab history, for example after a manual import, this step is skipped and the post says so.
 2. Deletes the file.
 3. Searches for a new one, in a single search for every file that was deleted.
 
-A failed blocklist doesn't stop the delete and search; a failed delete means that file isn't searched for. The issue post gets a "Replacement started by" line with the result of each step, and the bot comments on the Seerr issue so the reporter sees it there too. The comment is posted as the Seerr API key's user. The issue stays open until an admin resolves it.
+A failed blocklist doesn't stop the delete and search; a failed delete means that file isn't searched for. The issue post gets a "Replacement started by" line with the result of each step, and the bot comments on the Seerr issue so the reporter sees it there too. The comment is posted as the Seerr API key's user. The issue stays open until an admin or approver resolves it.
 
 ## Development
 

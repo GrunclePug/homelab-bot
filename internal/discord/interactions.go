@@ -26,6 +26,7 @@ const (
 
 const (
 	textAdminsOnly = "Only admins can do that."
+	textIssueRoles = "Only admins and approvers can do that."
 	textMediaOnly  = "You need the media role to use /queue."
 	textExpired    = "This has expired. Press Replace on the issue post again."
 )
@@ -56,8 +57,9 @@ func (b *Bot) onComponent(e *events.ComponentInteractionCreate) {
 		b.statusRefreshed(e)
 		return
 	}
-	if !hasRole(e.Member(), b.cfg.AdminRoleID) {
-		b.ephemeral(e.CreateMessage, textAdminsOnly)
+	// The issue buttons: Replace, Resolve and the Replace flow's own.
+	if !hasRole(e.Member(), b.cfg.AdminRoleID, b.cfg.ApproverRoleID) {
+		b.ephemeral(e.CreateMessage, textIssueRoles)
 		return
 	}
 	switch {
