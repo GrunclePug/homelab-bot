@@ -1,5 +1,5 @@
-// Package discord runs the Discord side of the bot: the gateway session,
-// the slash commands, the issue posts, access requests and their buttons.
+// Package discord runs the bot's Discord side: commands, issue posts,
+// access requests and their buttons.
 package discord
 
 import (
@@ -61,8 +61,8 @@ type Bot struct {
 	pending *pendingStore
 	log     *slog.Logger
 
-	// Running interaction handlers, so shutdown can let them finish:
-	// disgo runs each in its own goroutine and doesn't wait for them.
+	// Running handlers, so shutdown can let them finish: disgo runs each
+	// in its own goroutine and doesn't wait for them.
 	mu       sync.Mutex
 	closing  bool
 	handlers sync.WaitGroup
@@ -71,9 +71,9 @@ type Bot struct {
 // textRestarting answers a click that comes in while the bot shuts down.
 const textRestarting = "The bot is restarting. Try again in a minute."
 
-// enter registers a handler that is starting. It returns false once
-// shutdown has begun, and the handler should only answer textRestarting.
-// A handler that entered calls b.handlers.Done when it returns.
+// enter registers a starting handler, which calls b.handlers.Done when it
+// returns. Once shutdown has begun it returns false, and the handler
+// should only answer textRestarting.
 func (b *Bot) enter() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -91,7 +91,7 @@ func (b *Bot) Drain(ctx context.Context) error {
 	b.closing = true
 	b.mu.Unlock()
 	done := make(chan struct{})
-	// If ctx ends first this goroutine waits on; the process is exiting.
+	// If ctx ends first, this goroutine is left waiting as the process exits.
 	go func() {
 		b.handlers.Wait()
 		close(done)
@@ -122,13 +122,12 @@ func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *
 		Users: []snowflake.ID{},
 	}
 	client, err := disgo.New(cfg.Token,
-		// At debug level disgo logs every REST body, which includes the
-		// member's full email in the review step and interaction tokens.
+		// At debug level disgo logs REST bodies, which hold members' email
+		// addresses and interaction tokens.
 		bot.WithLogger(slog.New(atLeast{Handler: log.Handler(), min: slog.LevelInfo}).With("component", "disgo")),
-		// Guild members is a privileged intent, for leaves and role changes.
-		// The member cache, which disgo leaves off by default, gives role
-		// changes the roles from before; a large threshold of 250, the
-		// most Discord allows, fills it when the bot connects.
+		// Guild members (privileged) brings leaves and role changes; the
+		// member cache, off by default, gives updates the roles from
+		// before, and the largest threshold fills it on connect.
 		bot.WithGatewayConfigOpts(
 			gateway.WithIntents(gateway.IntentGuilds, gateway.IntentGuildMembers),
 			gateway.WithLargeThreshold(250),
@@ -171,8 +170,7 @@ func New(cfg Config, st *store.Store, sc *seerr.Client, rs replace.Service, qc *
 	return b, nil
 }
 
-// atLeast passes on only records at min or above, whatever the wrapped
-// handler would allow.
+// atLeast passes on only records at min or above.
 type atLeast struct {
 	slog.Handler
 	min slog.Level
@@ -207,8 +205,7 @@ var commands = []discord.ApplicationCommandCreate{
 	discord.SlashCommandCreate{
 		Name:        "access-panel",
 		Description: "Post the media server access request panel in this channel",
-		// Hidden from members without Manage Server; the bot also checks
-		// for the admin role.
+		// Hidden without Manage Server; the bot checks the admin role too.
 		DefaultMemberPermissions: omit.NewPtr(discord.PermissionManageGuild),
 	},
 }
@@ -221,7 +218,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	if err := b.client.OpenGateway(ctx); err != nil {
 		return fmt.Errorf("open gateway: %w", err)
 	}
-	// Not fatal: the requests stay as they are and can be fixed by hand.
+	// Not fatal: the requests can be fixed by hand.
 	if err := b.access.recoverInterrupted(ctx); err != nil {
 		b.log.Error("recover interrupted access requests", "err", err)
 	}
@@ -250,10 +247,8 @@ func (b *Bot) Ready() error {
 	return nil
 }
 
-// HandleSeerr acts on a Seerr webhook payload.
-//
-// It doesn't stop if Seerr drops the connection: a post made but not yet
-// recorded would be posted again by the next event.
+// HandleSeerr acts on a Seerr webhook payload. It carries on if Seerr
+// hangs up, or a post made but not yet recorded would be made again.
 func (b *Bot) HandleSeerr(ctx context.Context, p seerr.Payload) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayTimeout)
 	defer cancel()
@@ -291,8 +286,8 @@ func (b *Bot) onCommand(e *events.ApplicationCommandInteractionCreate) {
 		b.ephemeral(e.CreateMessage, "This bot only works in its own server.")
 		return
 	}
-	// The application may have other kinds of command, such as context
-	// menu entries, whose data isn't slash command data.
+	// Other kinds of command, such as context menu entries, aren't slash
+	// commands.
 	data, ok := e.Data.(discord.SlashCommandInteractionData)
 	if !ok {
 		b.log.Warn("unsupported command type", "name", e.Data.CommandName())
@@ -334,8 +329,7 @@ func (b *Bot) onMemberLeave(e *events.GuildMemberLeave) {
 	}
 }
 
-// onMemberUpdate asks approvers about the Plex access of a member who lost
-// the media role.
+// onMemberUpdate acts on a member's roles changing.
 func (b *Bot) onMemberUpdate(e *events.GuildMemberUpdate) {
 	if e.GuildID != b.cfg.GuildID || !b.enter() {
 		return

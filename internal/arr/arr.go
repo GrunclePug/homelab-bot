@@ -13,9 +13,8 @@ import (
 	"time"
 )
 
-// History event types, as the v3 API spells them in responses. The numeric
-// values differ between Sonarr and Radarr, so the clients filter on these
-// names rather than passing eventType to the API.
+// History event types as the v3 API names them. Their numbers differ
+// between Sonarr and Radarr, so the clients match on names.
 const (
 	EventGrabbed  = "grabbed"
 	EventImported = "downloadFolderImported"
@@ -44,10 +43,9 @@ type historyPage struct {
 // historyPageSize is enough to cover one episode's or movie's history.
 const historyPageSize = 100
 
-// ReleaseGrab picks the grab that produced the current file from a history
-// list sorted newest first: the grab whose download ID matches the newest
-// import, or failing that the newest grab. ok is false when there is no
-// grab at all, for example for a manually imported file.
+// ReleaseGrab picks the grab behind the current file from history sorted
+// newest first: the one matching the newest import's download ID, or else
+// the newest grab. ok is false if there is none, as after a manual import.
 func ReleaseGrab(records []HistoryRecord) (HistoryRecord, bool) {
 	for _, r := range records {
 		if r.EventType != EventImported || r.DownloadID == "" {
@@ -81,8 +79,8 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("%s %s: %d %s: %s", e.Method, e.Path, e.Code, http.StatusText(e.Code), e.Body)
 }
 
-// UnreachableError is a request that got no answer at all. Its message
-// holds the app's URL, so it belongs in logs, not in Discord.
+// UnreachableError is a request that got no answer. Its message holds the
+// app's URL, so it belongs in logs, not Discord.
 type UnreachableError struct {
 	App string
 	Err error
@@ -93,27 +91,22 @@ func (e *UnreachableError) Unwrap() error { return e.Err }
 
 // IsNotFound reports whether err is a 404 from Sonarr or Radarr.
 func IsNotFound(err error) bool {
-	var se *StatusError
-	return errors.As(err, &se) && se.Code == http.StatusNotFound
+	se, ok := errors.AsType[*StatusError](err)
+	return ok && se.Code == http.StatusNotFound
 }
 
-// Brief describes err in a few words fit for a channel members can read:
-// no URLs, hosts or response bodies.
+// Brief describes err in a few words, without URLs, hosts or bodies.
 func Brief(err error) string {
-	var (
-		se *StatusError
-		ue *UnreachableError
-	)
-	switch {
-	case errors.As(err, &se):
+	if se, ok := errors.AsType[*StatusError](err); ok {
 		return fmt.Sprintf("%s answered %d %s", appName(se.App), se.Code, http.StatusText(se.Code))
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timed out"
-	case errors.As(err, &ue):
-		return appName(ue.App) + " unreachable"
-	default:
-		return "failed"
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timed out"
+	}
+	if ue, ok := errors.AsType[*UnreachableError](err); ok {
+		return appName(ue.App) + " unreachable"
+	}
+	return "failed"
 }
 
 func appName(app string) string {

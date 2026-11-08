@@ -1,5 +1,5 @@
-// Package store keeps the bot's state in SQLite: which Discord message
-// belongs to which Seerr issue.
+// Package store keeps the bot's state in SQLite: the Discord posts for
+// Seerr issues, and access requests.
 package store
 
 import (
@@ -36,8 +36,8 @@ type Post struct {
 	CreatedAt time.Time
 }
 
-// Open opens the database at path, creating the file and its directory if
-// needed, and applies any pending migrations.
+// Open opens the database at path, creating it if needed, and applies any
+// pending migrations.
 func Open(ctx context.Context, path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -70,8 +70,8 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
-// migrate applies each embedded migration numbered above the database's
-// user_version, in order, each in its own transaction.
+// migrate applies the embedded migrations numbered above user_version, in
+// order, each in its own transaction.
 func (s *Store) migrate(ctx context.Context) error {
 	var current int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&current); err != nil {

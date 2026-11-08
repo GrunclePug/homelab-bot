@@ -1,4 +1,5 @@
-// Package qbit reads the download queue from qBittorrent's Web API.
+// Package qbit reads the download queue and transfer state from
+// qBittorrent's Web API.
 package qbit
 
 import (
@@ -24,8 +25,8 @@ type Torrent struct {
 	Priority int     `json:"priority"`
 }
 
-// Client is a qBittorrent Web API client. It authenticates with the Web
-// UI's API key, which qBittorrent 5.2 and later accept as a Bearer token.
+// Client is a qBittorrent Web API client, authenticated with the Web UI's
+// API key (qBittorrent 5.2 and later).
 type Client struct {
 	baseURL string
 	apiKey  string

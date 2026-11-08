@@ -44,9 +44,8 @@ const (
 	groupOther
 )
 
-// classify puts a torrent in its section. qBittorrent 5 renamed the
-// paused* states to stopped*; both are handled. Anything finished, which
-// covers every *UP state, is left out.
+// classify puts a torrent in its section, leaving out finished ones (every
+// *UP state). qBittorrent 5 renamed paused* to stopped*; both count.
 func classify(t Torrent) group {
 	if strings.HasSuffix(t.State, "UP") || t.Progress >= 1 {
 		return groupNone
@@ -178,8 +177,8 @@ func progress(t Torrent) string {
 	return pct + " of " + Bytes(t.Size)
 }
 
-// size shows a torrent's size. A magnet link has none until qBittorrent
-// has fetched its metadata.
+// size shows a torrent's size, which a magnet link lacks until its
+// metadata is fetched.
 func size(n int64) string {
 	if n <= 0 {
 		return "size not known yet"

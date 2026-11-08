@@ -49,7 +49,7 @@ const (
 	textStatusOnly = "You need the media role to use /status."
 
 	// statusTimeout bounds each source, so one slow app can't hold up the
-	// card; it shows as timed out instead.
+	// card.
 	statusTimeout = 10 * time.Second
 
 	colorTrouble = 0xE74C3C
@@ -96,8 +96,8 @@ func (s StatusSources) collect(ctx context.Context) report {
 	return r
 }
 
-// errs lists what couldn't be read, for the log: the card only says
-// "unreachable", since the errors name hosts.
+// errs joins what couldn't be read, for the log: the errors name hosts, so
+// the card doesn't show them.
 func (r report) errs() error {
 	return errors.Join(r.plexErr, r.seerrErr, r.sonarrErr, r.radarrErr, r.qbitErr, r.kumaErr)
 }
@@ -130,8 +130,7 @@ func (p part) field(maxName, maxValue int) discord.EmbedField {
 	}
 }
 
-// Discord's limits for an embed, in characters: a field's name, and all
-// of its text.
+// Discord's embed limits, in characters.
 const (
 	maxFieldName  = 256
 	maxEmbedTotal = 6000
@@ -139,22 +138,21 @@ const (
 
 // unreachable describes a failed read without naming hosts.
 func unreachable(err error) string {
-	var (
-		se *arr.StatusError
-		te interface{ Timeout() bool }
-	)
-	msg := err.Error()
-	switch {
-	case errors.As(err, &se):
+	if _, ok := errors.AsType[*arr.StatusError](err); ok {
 		return arr.Brief(err)
-	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &te) && te.Timeout()):
-		return "Timed out"
-	// qBittorrent says so; Seerr's errors carry the HTTP status.
-	case strings.Contains(msg, "API key rejected"), strings.Contains(msg, "401 Unauthorized"), strings.Contains(msg, "403 Forbidden"):
-		return "API key rejected"
-	default:
-		return "Unreachable"
 	}
+	if te, ok := errors.AsType[interface {
+		error
+		Timeout() bool
+	}](err); errors.Is(err, context.DeadlineExceeded) || (ok && te.Timeout()) {
+		return "Timed out"
+	}
+	// qBittorrent says so; Seerr's errors carry the HTTP status.
+	msg := err.Error()
+	if strings.Contains(msg, "API key rejected") || strings.Contains(msg, "401 Unauthorized") || strings.Contains(msg, "403 Forbidden") {
+		return "API key rejected"
+	}
+	return "Unreachable"
 }
 
 // shortVersion drops build suffixes: 1.43.5.11079-b3b13e506 is 1.43.5.11079.
@@ -246,7 +244,7 @@ func qbitPart(r report) part {
 }
 
 // storagePart shows the largest volume Sonarr sees, or Radarr if Sonarr
-// shows none, which is where the media lives.
+// shows none: that is where the media lives.
 func storagePart(r report) (part, bool) {
 	disks := r.sonarr.Disks
 	if r.sonarrErr != nil || len(disks) == 0 {
@@ -271,9 +269,8 @@ func storagePart(r report) (part, bool) {
 	return p, true
 }
 
-// kumaParts summarises each status page group: how many monitors are up,
-// which are not, and the group's average uptime over 24 hours.
-// hidden is how many groups didn't fit on the card.
+// kumaParts summarises each status page group; hidden is how many groups
+// didn't fit on the card.
 func kumaParts(r report) (parts []part, hidden int) {
 	if !r.kumaOn {
 		return nil, 0
@@ -363,7 +360,7 @@ func statusEmbed(r report) discord.Embed {
 		WithColor([...]int{colorApproved, colorPending, colorTrouble}[worst]).
 		WithTimestamp(r.at).
 		WithFooterText("Refreshed")
-	// In a big outage every group lists what's down; shorten the fields
+	// In a big outage every group lists what's down: shorten the fields
 	// until the card fits, as Discord refuses a larger one.
 	n := utf8.RuneCountInString
 	for maxValue := maxFieldValue; ; maxValue /= 2 {

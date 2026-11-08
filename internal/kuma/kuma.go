@@ -1,7 +1,5 @@
-// Package kuma reads an Uptime Kuma status page through its public JSON
-// API, the one the status page itself polls: /api/status-page/{slug} for
-// the groups and monitors, /api/status-page/heartbeat/{slug} for their
-// recent heartbeats and 24-hour uptime. It needs no credentials.
+// Package kuma reads an Uptime Kuma status page through the public JSON the
+// page itself polls, so it needs no credentials.
 package kuma
 
 import (
@@ -47,8 +45,8 @@ type Client struct {
 	http    *http.Client
 }
 
-// NewClient returns a client for the status page at pageURL, the address
-// it is shown at, such as https://kuma.example.com/status/homelab.
+// NewClient returns a client for the status page at pageURL, such as
+// https://kuma.example.com/status/homelab.
 func NewClient(pageURL string) (*Client, error) {
 	base, slug, err := ParsePageURL(pageURL)
 	if err != nil {

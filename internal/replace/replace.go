@@ -74,8 +74,8 @@ const (
 	ScopeShow                // the whole show
 )
 
-// Plan is what a Replace press found: the title and the candidate files.
-// For a season or show, the admin picks among the candidates.
+// Plan is what a Replace press found. For a season or show, the admin
+// picks among the candidates.
 type Plan struct {
 	Title      string
 	Scope      Scope
@@ -88,8 +88,7 @@ func (p Plan) NeedsPick() bool {
 	return p.Scope != ScopeOne && len(p.Candidates) > 1
 }
 
-// UserError is a problem worth showing to the admin as it is, such as a
-// title missing from Sonarr.
+// UserError is a problem to show the admin as it is.
 type UserError struct{ Msg string }
 
 func (e *UserError) Error() string { return e.Msg }
@@ -197,8 +196,7 @@ func (s Service) lookupShow(ctx context.Context, is seerr.Issue) (Plan, error) {
 		}
 		picked = append(picked, t)
 	}
-	// Deleting a file that holds several episodes, such as S01E01E02,
-	// removes all of them, so they're all replaced together.
+	// Deleting a file such as S01E01E02 removes every episode in it.
 	cands := withSharedFiles(all, picked)
 
 	p := Plan{Title: title, Candidates: cands}
@@ -240,15 +238,14 @@ func Select(cands []Target, values []string) []Target {
 	seasons := map[int]bool{}
 	items := map[int]bool{}
 	for _, v := range values {
-		switch {
-		case v == PickAll:
+		if v == PickAll {
 			all = true
-		case strings.HasPrefix(v, pickSeasonPfx):
-			if n, err := strconv.Atoi(v[len(pickSeasonPfx):]); err == nil {
+		} else if s, ok := strings.CutPrefix(v, pickSeasonPfx); ok {
+			if n, err := strconv.Atoi(s); err == nil {
 				seasons[n] = true
 			}
-		case strings.HasPrefix(v, pickItemPfx):
-			if n, err := strconv.Atoi(v[len(pickItemPfx):]); err == nil {
+		} else if s, ok := strings.CutPrefix(v, pickItemPfx); ok {
+			if n, err := strconv.Atoi(s); err == nil {
 				items[n] = true
 			}
 		}
@@ -320,34 +317,30 @@ func Seasons(cands []Target) []Season {
 type Result struct {
 	Target Target
 
-	// Blocklisted is the release marked failed, if any. BlocklistNote
-	// says why nothing was blocklisted, or that the release was already
-	// blocklisted for an earlier target in this run.
+	// Blocklisted is the release marked failed. BlocklistNote says why
+	// none was, or that an earlier target's run already did.
 	Blocklisted   string
 	BlocklistNote string
 	BlocklistErr  error
 
 	DeleteErr   error
-	AlreadyGone bool   // the file was gone before the delete, for example by an earlier replace
+	AlreadyGone bool   // the file was gone before the delete
 	SameFileAs  string // label of the earlier target whose file this one shared
-	SearchErr   error  // set when the search for this target failed
+	SearchErr   error
 	Searched    bool
 }
 
 // Deleted reports whether the file was deleted.
 func (r Result) Deleted() bool { return r.DeleteErr == nil }
 
-// Run replaces each target: blocklist, then delete, for every file, then
-// one search for every file that was deleted. A failed blocklist doesn't
-// stop the delete; a failed delete means no search for that file.
-//
-// Targets sharing a file are handled once, with the first of them: the
-// file is blocklisted and deleted once, and every episode it held is
-// searched for.
+// Run blocklists and deletes each target's file, then starts one search
+// for every file deleted. A failed blocklist doesn't stop the delete; a
+// failed delete means no search. Targets sharing a file are handled once,
+// with the first of them.
 func (s Service) Run(ctx context.Context, targets []Target) []Result {
 	results := make([]Result, len(targets))
-	marked := map[string]bool{} // download IDs already marked failed
-	byFile := map[int]int{}     // file ID → index of the result that handled it
+	marked := map[string]bool{} // download IDs marked failed
+	byFile := map[int]int{}     // file ID to the result that handled it
 	var search []int
 	for i, t := range targets {
 		r := Result{Target: t}
@@ -437,9 +430,8 @@ func (s Service) delete(ctx context.Context, t Target) error {
 	return errors.New("unknown target kind")
 }
 
-// Summary describes one result in a line, for the issue post.
-// Summary describes one result in a line, for the issue post. Errors are
-// given in a few words (arr.Brief); log Err for the details.
+// Summary describes a result in one line for the issue post, with errors
+// in a few words; Err has the details.
 func (r Result) Summary() string {
 	var parts []string
 	switch {
@@ -472,8 +464,8 @@ func (r Result) Summary() string {
 	return r.Target.Label + ": " + strings.Join(parts, " · ")
 }
 
-// Err joins the errors behind a result, with full details, for the log.
-// Errors shared from an earlier target of the same file aren't repeated.
+// Err joins the errors behind a result for the log, leaving out those
+// shared with an earlier target of the same file.
 func (r Result) Err() error {
 	if r.SameFileAs != "" {
 		return r.SearchErr

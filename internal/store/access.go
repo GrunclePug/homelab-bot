@@ -36,29 +36,26 @@ type AccessRequest struct {
 	DecidedAt time.Time
 	InvitedAt time.Time // zero until the Plex invite has gone out
 
-	// PlexAccount is who the approval's Plex share is for, as the plex
-	// package identifies them; "" if unknown, for example for approvals
-	// made before it was recorded.
+	// PlexAccount is whose Plex access the approval gave, as a
+	// plex.Account; "" if unknown or not tracked.
 	PlexAccount string
 	ShareState  string
 	// The "Remove Plex access?" card, if one was posted.
 	ShareChannelID string
 	ShareMessageID string
-	// PlexAlready is whether the account already had access when the
-	// request was approved, so no invite was sent.
+	// PlexAlready means the account had access before the approval.
 	PlexAlready bool
 }
 
-// Share states of an approved request: what is being done about its Plex
-// share once the member leaves or loses the media role.
+// Share states: what is being done about an approval's Plex access once
+// the member leaves or loses the media role.
 const (
 	ShareActive   = ""         // nothing to do
 	ShareAsked    = "asked"    // approvers were asked to remove or keep it
 	ShareKept     = "kept"     // an approver chose to keep it
 	ShareRemoving = "removing" // an approver's Remove click is being acted on
 	ShareRemoved  = "removed"
-	// ShareSuperseded is an approval replaced by a newer one for the same
-	// member, which carries on tracking their access.
+	// ShareSuperseded hands tracking to a newer approval of the account.
 	ShareSuperseded = "superseded"
 )
 
@@ -159,15 +156,13 @@ func (s *Store) Request(ctx context.Context, id int) (AccessRequest, bool, error
 	return r, true, nil
 }
 
-// Processing lists the requests an approver's click was acting on, for
-// example when the bot stopped halfway through.
+// Processing lists the requests an approver's click is acting on.
 func (s *Store) Processing(ctx context.Context) ([]AccessRequest, error) {
 	return s.listRequests(ctx, "processing access requests", " WHERE status = ? ORDER BY id", StatusProcessing)
 }
 
-// MarkInvited records that the account has Plex access, through a new
-// invite or, if already is set, one it had before; and who the access is
-// for, or "" if that isn't known or isn't to be tracked.
+// MarkInvited records that the account has Plex access, new or already
+// had, and plexAccount, its plex.Account or "" if not tracked.
 func (s *Store) MarkInvited(ctx context.Context, id int, plexAccount string, already bool) error {
 	_, err := s.db.ExecContext(ctx, "UPDATE access_request SET invited_at = ?, plex_account = ?, plex_already = ? WHERE id = ?",
 		time.Now().UTC().Format(time.RFC3339), plexAccount, already, id)
@@ -177,10 +172,9 @@ func (s *Store) MarkInvited(ctx context.Context, id int, plexAccount string, alr
 	return nil
 }
 
-// Claim moves a request from one status to another, recording by as the
-// approver acting on it, and reports whether it was in the from status.
-// Approvers claim a pending request before acting on it, so two clicks
-// can't both act.
+// Claim moves a request from status from to to, recording by as its
+// approver, and reports whether it was in from, so two clicks can't both
+// act.
 func (s *Store) Claim(ctx context.Context, id int, from, to, by string) (bool, error) {
 	res, err := s.db.ExecContext(ctx,
 		"UPDATE access_request SET status = ?, decided_by = ? WHERE id = ? AND status = ?", to, by, id, from)
@@ -194,9 +188,8 @@ func (s *Store) Claim(ctx context.Context, id int, from, to, by string) (bool, e
 	return n == 1, nil
 }
 
-// Decide closes a request as approved, denied or failed, and replaces the Plex
-// account with plex, normally a masked form: it isn't needed any more, so no
-// copy of it is kept on disk either.
+// Decide closes a request as approved, denied or failed, replacing the Plex
+// account with plex, normally masked, so no copy is kept on disk.
 func (s *Store) Decide(ctx context.Context, id int, status, decidedBy, plex string) error {
 	_, err := s.db.ExecContext(ctx,
 		"UPDATE access_request SET status = ?, decided_by = ?, decided_at = ?, plex = ? WHERE id = ?",
@@ -205,28 +198,24 @@ func (s *Store) Decide(ctx context.Context, id int, status, decidedBy, plex stri
 		return fmt.Errorf("decide access request %d: %w", id, err)
 	}
 	// secure_delete clears the old value from the database file, but the
-	// WAL still holds the page as it was until a checkpoint. If a reader
-	// is busy, SQLite reports that in the result instead of an error and
-	// leaves the rest to the next checkpoint.
+	// WAL keeps it until a checkpoint.
 	if _, err := s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 		return fmt.Errorf("decide access request %d: checkpoint: %w", id, err)
 	}
 	return nil
 }
 
-// Shares lists a member's approved requests whose Plex access is tracked
-// and not settled for good, newest first. A member can have more than
-// one: an earlier account, and a different one approved since.
+// Shares lists a member's approvals whose Plex access is still tracked,
+// newest first: there is one per account they were approved for.
 func (s *Store) Shares(ctx context.Context, userID string) ([]AccessRequest, error) {
 	return s.listRequests(ctx, "plex shares of member "+userID,
 		` WHERE user_id = ? AND status = ? AND plex_account != '' AND share_state NOT IN (?, ?) ORDER BY id DESC`,
 		userID, StatusApproved, ShareRemoved, ShareSuperseded)
 }
 
-// NewerApproval returns the member's newest request approved after
-// request id that may cover the same Plex access: one for plexAccount, or
-// one whose account had access already but isn't known. ok is false if
-// there is none.
+// NewerApproval returns the member's newest approval after request id that
+// may cover the same access: one for plexAccount, or one for an account
+// that already had access but isn't known.
 func (s *Store) NewerApproval(ctx context.Context, userID string, id int, plexAccount string) (newer int, ok bool, err error) {
 	err = s.db.QueryRowContext(ctx,
 		`SELECT id FROM access_request
@@ -242,9 +231,8 @@ func (s *Store) NewerApproval(ctx context.Context, userID string, id int, plexAc
 	return newer, true, nil
 }
 
-// SetShareState moves a request's share from one of the states in from to
-// to, and reports whether it was in one of them, so two events or clicks
-// can't both act on it.
+// SetShareState moves a request's share state from one of from to to, and
+// reports whether it was in one, so two events or clicks can't both act.
 func (s *Store) SetShareState(ctx context.Context, id int, to string, from ...string) (bool, error) {
 	if len(from) == 0 {
 		return false, errors.New("set share state: no from state")
@@ -266,8 +254,7 @@ func (s *Store) SetShareState(ctx context.Context, id int, to string, from ...st
 	return n == 1, nil
 }
 
-// Removing lists the requests whose share an approver's Remove click was
-// acting on, for example when the bot stopped halfway through.
+// Removing lists the requests whose removal is in progress.
 func (s *Store) Removing(ctx context.Context) ([]AccessRequest, error) {
 	return s.listRequests(ctx, "access requests being removed", " WHERE share_state = ? ORDER BY id", ShareRemoving)
 }
@@ -282,8 +269,8 @@ func (s *Store) SetSharePost(ctx context.Context, id int, channelID, messageID s
 	return nil
 }
 
-// HadAccount reports whether a request of the member's before request
-// before was approved for the same Plex account.
+// HadAccount reports whether one of the member's requests before request
+// before was approved for plexAccount.
 func (s *Store) HadAccount(ctx context.Context, userID, plexAccount string, before int) (bool, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,
@@ -304,9 +291,7 @@ func (s *Store) OlderShares(ctx context.Context, userID string, newer int) ([]Ac
 		userID, newer, StatusApproved, ShareRemoved, ShareSuperseded)
 }
 
-// TrackedShares lists the approved requests whose Plex access is tracked
-// and not settled for good, for the startup check of members who left,
-// lost the role or got it back while the bot was down.
+// TrackedShares lists every approval whose Plex access is still tracked.
 func (s *Store) TrackedShares(ctx context.Context) ([]AccessRequest, error) {
 	return s.listRequests(ctx, "tracked plex shares",
 		` WHERE status = ? AND plex_account != '' AND share_state IN (?, ?, ?) ORDER BY id`,

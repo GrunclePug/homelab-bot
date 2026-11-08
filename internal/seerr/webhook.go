@@ -20,9 +20,8 @@ const (
 	NotifyIssueReopened = "ISSUE_REOPENED"
 )
 
-// Payload is the body Seerr's webhook agent sends, as set by the payload
-// template in the README. Seerr fills in every value as a string, and an
-// unset value arrives empty.
+// Payload is the body Seerr's webhook sends with the README's template.
+// Every value is a string, empty when unset.
 type Payload struct {
 	Event            string `json:"event"`
 	NotificationType string `json:"notification_type"`
@@ -49,16 +48,16 @@ func (p Payload) Issue() (int, error) {
 	return id, nil
 }
 
-// ErrBadPayload marks a payload the receiver can't act on. The handler
-// answers it with 400 instead of 500.
+// ErrBadPayload marks a payload the receiver can't act on, answered with
+// 400 rather than 500.
 var ErrBadPayload = errors.New("bad payload")
 
 // maxBody caps the webhook body. Seerr's payloads are a few kilobytes.
 const maxBody = 1 << 20
 
-// Handler returns the POST /seerr handler. It checks that the
-// Authorization header equals secret, decodes the payload and passes it to
-// receive. Seerr doesn't retry, so a failure is only logged on both sides.
+// Handler returns the POST /seerr handler: it checks the Authorization
+// header against secret and passes the payload to receive. Seerr doesn't
+// retry.
 func Handler(secret string, receive func(context.Context, Payload) error, log *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := r.Header.Get("Authorization")

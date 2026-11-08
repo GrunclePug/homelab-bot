@@ -12,8 +12,8 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 )
 
-// The member checks what they typed before the request is sent: the form
-// leads to a review only they can see, with Send request and Edit buttons.
+// The form leads to a private review, with Send request and Edit buttons,
+// before the request is sent.
 const (
 	idAccessSend = "access:send:"
 	idAccessEdit = "access:edit:"
@@ -30,7 +30,7 @@ type draft struct {
 }
 
 // draftStore keeps drafts in memory, keyed by a random token in the review
-// buttons' custom IDs. A restart forgets them; the member starts again.
+// buttons' custom IDs.
 type draftStore struct {
 	mu     sync.Mutex
 	drafts map[string]draft
@@ -71,8 +71,8 @@ func (s *draftStore) get(token string, userID snowflake.ID) (draft, bool) {
 	return d, true
 }
 
-// take removes and returns the member's draft, so it is sent only once,
-// even if they click twice.
+// take removes and returns the member's draft, so a double click sends it
+// once.
 func (s *draftStore) take(token string, userID snowflake.ID) (draft, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -87,8 +87,8 @@ func (s *draftStore) take(token string, userID snowflake.ID) (draft, bool) {
 var emailPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s.]{2,}$`)
 
 // checkPlexAccount returns a problem with what the member typed, or "".
-// Anything with an @ must look like an email address; anything else is
-// taken as a Plex username.
+// Anything with an @ must look like an email address; the rest are taken
+// as usernames.
 func checkPlexAccount(s string) string {
 	switch {
 	case strings.TrimSpace(s) == "":
@@ -99,9 +99,8 @@ func checkPlexAccount(s string) string {
 	return ""
 }
 
-// reviewMessage shows the member what they typed, in full, since only they
-// see it, and asks them to send it or edit it. problem, if set, explains
-// why it can't be sent yet, and only Edit is offered.
+// reviewMessage shows the member what they typed, in full as only they see
+// it. With a problem, only Edit is offered.
 func reviewMessage(d draft, token, problem string) discord.MessageCreate {
 	var b strings.Builder
 	if problem != "" {

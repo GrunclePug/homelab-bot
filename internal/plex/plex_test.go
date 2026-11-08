@@ -50,12 +50,12 @@ func TestInvite(t *testing.T) {
 	ctx := context.Background()
 
 	c := NewClient(srv.URL, "tok", "abc123")
-	secs, err := c.Sections(ctx)
+	srv0, err := c.server(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(secs) != 2 || secs[0].ID != 901 || secs[1].Title != "TV" {
-		t.Errorf("sections = %+v", secs)
+	if srv0.Name != "media" || len(srv0.Sections) != 2 || srv0.Sections[0].ID != 901 {
+		t.Errorf("server = %+v", srv0)
 	}
 
 	id, err := c.Invite(ctx, "friend@example.com")

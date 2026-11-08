@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,9 +30,12 @@ const (
 	textExpired    = "This has expired. Press Replace on the issue post again."
 )
 
-// maxMenus is the number of select menus a message can hold, one per
-// action row.
-const maxMenus = 5
+// A message holds up to maxMenus select menus, one per action row, each
+// with up to maxMenuOptions options.
+const (
+	maxMenus       = 5
+	maxMenuOptions = 25
+)
 
 func (b *Bot) onComponent(e *events.ComponentInteractionCreate) {
 	if !b.enter() {
@@ -87,8 +91,7 @@ func (b *Bot) respondText(ctx context.Context, appToken, text string) {
 
 // problem describes an error for the admin and logs anything unexpected.
 func (b *Bot) problem(what string, err error) string {
-	var ue *replace.UserError
-	if errors.As(err, &ue) {
+	if ue, ok := errors.AsType[*replace.UserError](err); ok {
 		return ue.Msg
 	}
 	b.log.Error(what, "err", err)
@@ -330,8 +333,10 @@ func pickView(p replace.Plan, token string) discord.MessageUpdate {
 	}
 
 	var rows []discord.LayoutComponent
-	for i := 0; i < len(opts) && len(rows) < maxMenus; i += 25 {
-		chunk := opts[i:min(i+25, len(opts))]
+	for chunk := range slices.Chunk(opts, maxMenuOptions) {
+		if len(rows) == maxMenus {
+			break
+		}
 		menu := discord.NewStringSelectMenu(idPick+token+":"+strconv.Itoa(len(rows)), "Choose…", chunk...).
 			WithMinValues(1).
 			WithMaxValues(len(chunk))
@@ -340,7 +345,7 @@ func pickView(p replace.Plan, token string) discord.MessageUpdate {
 	if len(rows) > 1 {
 		prompt += "\nEach menu is a separate pick: choose from one menu, or use \"All of them\"."
 	}
-	if shown := maxMenus * 25; len(opts) > shown {
+	if shown := maxMenus * maxMenuOptions; len(opts) > shown {
 		prompt += fmt.Sprintf("\nOnly the first %d choices fit here; use \"All of them\" for the rest.", shown-1)
 	}
 	return discord.NewMessageUpdate().WithContent(prompt).WithComponents(rows...)

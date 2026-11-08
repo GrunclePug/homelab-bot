@@ -183,9 +183,8 @@ func run() error {
 	case <-ctx.Done():
 	}
 	log.Info("shutting down")
-	// Let work in progress finish: first Seerr webhooks, then Discord
-	// clicks such as a Replace, before Discord and the database close.
-	// docker-compose.yml gives the container long enough for both.
+	// Let Seerr webhooks, then Discord clicks such as a Replace, finish
+	// before Discord and the database close.
 	shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutCtx); err != nil {

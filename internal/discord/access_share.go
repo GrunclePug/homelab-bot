@@ -15,9 +15,9 @@ import (
 	"github.com/grunclepug/homelab-bot/internal/store"
 )
 
-// When a member the bot onboarded leaves the server or loses the media
-// role, approvers are asked whether to remove their Plex share. Nothing
-// changes in Plex until one of them presses Remove access.
+// When an onboarded member leaves or loses the media role, approvers get a
+// card asking whether to remove their Plex access. Nothing changes in Plex
+// until one of them presses Remove access.
 const (
 	idShareRemove = "access:unshare:"
 	idShareKeep   = "access:keep:"
@@ -26,10 +26,8 @@ const (
 	textLostRole = "no longer has the media role"
 )
 
-// memberLeft asks approvers about the Plex access of a member who left,
-// for each account tracked for them, unless they have already been asked
-// and the card is still there. Access an approver chose to keep is asked
-// about again: leaving is a new reason.
+// memberLeft asks about each account tracked for a member who left. Access
+// an approver kept is asked about again: leaving is a new reason.
 func (a *access) memberLeft(ctx context.Context, userID snowflake.ID) error {
 	a.shareMu.Lock()
 	defer a.shareMu.Unlock()
@@ -44,22 +42,18 @@ func (a *access) memberLeft(ctx context.Context, userID snowflake.ID) error {
 	return errors.Join(errs...)
 }
 
-// memberChanged acts on a member's roles changing from old (oldKnown is
-// false if the bot hadn't seen the member yet) to roles. Losing the media
-// role asks approvers about their Plex access, once. Getting it back
-// retires an open card and clears a choice to keep it, so losing it again
-// asks again.
+// memberChanged acts on a member's roles changing from old to roles;
+// oldKnown is false if the bot hadn't seen the member yet. Losing the media
+// role asks about their access, getting it back retires the card.
 func (a *access) memberChanged(ctx context.Context, userID snowflake.ID, old []snowflake.ID, oldKnown bool, roles []snowflake.ID) error {
 	a.shareMu.Lock()
 	defer a.shareMu.Unlock()
-	// Events are handled concurrently, so a later one may already have
-	// changed the roles again: act on the newest roles the bot has seen.
+	// Events run concurrently: skip one a newer change has overtaken.
 	hasMedia := slices.Contains(roles, a.mediaRole)
 	if now, ok := a.rolesNow(userID); ok && slices.Contains(now, a.mediaRole) != hasMedia {
 		return nil
 	}
-	// Only a change that took the role away counts: a member whose role
-	// was never added, say, may just have changed their nickname.
+	// Only a change that took the role away counts.
 	if !hasMedia && oldKnown && !slices.Contains(old, a.mediaRole) {
 		return nil
 	}
@@ -78,7 +72,6 @@ func (a *access) memberChanged(ctx context.Context, userID snowflake.ID, old []s
 	return errors.Join(errs...)
 }
 
-// rolesNow returns a member's roles as the bot last saw them, if it has.
 func (a *access) rolesNow(userID snowflake.ID) ([]snowflake.ID, bool) {
 	if a.currentRoles == nil {
 		return nil, false
@@ -86,8 +79,8 @@ func (a *access) rolesNow(userID snowflake.ID) ([]snowflake.ID, bool) {
 	return a.currentRoles(userID)
 }
 
-// roleBack settles r's access for a member who has the media role again.
-// Call it with shareMu held.
+// roleBack settles r for a member who has the media role again. Callers
+// hold shareMu.
 func (a *access) roleBack(ctx context.Context, r store.AccessRequest) error {
 	switch r.ShareState {
 	case store.ShareKept:
@@ -103,11 +96,9 @@ func (a *access) roleBack(ctx context.Context, r store.AccessRequest) error {
 	return nil
 }
 
-// retireOlder settles the member's earlier approvals once r, a newer one,
-// has been approved: their open cards no longer apply. An earlier approval
-// for the same account hands its tracking over to r. One for another
-// account stays tracked, as that account may still have access, and is
-// asked about again if the member leaves or loses the role.
+// retireOlder retires the cards of the member's approvals before r. One for
+// the same account hands its tracking to r; one for another account stays
+// tracked, as that account may still have access.
 func (a *access) retireOlder(ctx context.Context, r store.AccessRequest) error {
 	a.shareMu.Lock()
 	defer a.shareMu.Unlock()
@@ -121,8 +112,7 @@ func (a *access) retireOlder(ctx context.Context, r store.AccessRequest) error {
 		if r.PlexAccount != "" && o.PlexAccount == r.PlexAccount {
 			to = store.ShareSuperseded
 		}
-		// A removal being carried out is left to finish; removeShare
-		// checks for this newer approval.
+		// A removal in progress checks for newer approvals itself.
 		if o.ShareState == store.ShareRemoving || o.ShareState == to {
 			continue
 		}
@@ -138,9 +128,8 @@ func (a *access) retireOlder(ctx context.Context, r store.AccessRequest) error {
 	return errors.Join(errs...)
 }
 
-// askRemoval posts the card about r's access if its state is one of from.
-// If approvers were already asked, it posts the card again only if someone
-// deleted it. Call it with shareMu held.
+// askRemoval posts r's card if its state is one of from, or again if it
+// was asked about and the card was deleted. Callers hold shareMu.
 func (a *access) askRemoval(ctx context.Context, r store.AccessRequest, why string, from ...string) error {
 	moved := false
 	switch {
@@ -150,7 +139,6 @@ func (a *access) askRemoval(ctx context.Context, r store.AccessRequest, why stri
 		}
 		a.log.Info("plex share card was deleted, posting it again", "request", r.ID)
 	case slices.Contains(from, r.ShareState):
-		// From exactly the state read, so an undo restores the right one.
 		got, err := a.store.SetShareState(ctx, r.ID, store.ShareAsked, r.ShareState)
 		if err != nil || !got {
 			return err
@@ -166,7 +154,7 @@ func (a *access) askRemoval(ctx context.Context, r store.AccessRequest, why stri
 	if err != nil {
 		err = fmt.Errorf("ask about plex share of access request %d: %w", r.ID, err)
 		if moved {
-			// Put the state back, so the next event asks again.
+			// So the next event asks again.
 			undo, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 			defer cancel()
 			_, uerr := a.store.SetShareState(undo, r.ID, r.ShareState, store.ShareAsked)
@@ -175,16 +163,15 @@ func (a *access) askRemoval(ctx context.Context, r store.AccessRequest, why stri
 		return err
 	}
 	if err := a.store.SetSharePost(ctx, r.ID, msg.ChannelID.String(), msg.ID.String()); err != nil {
-		// The card works without it; it just can't be retired or found
-		// again.
+		// The card still works; it just can't be retired.
 		a.log.Error("record plex share card", "request", r.ID, "err", err)
 	}
 	a.log.Info("asked approvers about a plex share", "request", r.ID, "reason", why)
 	return nil
 }
 
-// cardExists reports whether r's card is still there. When that can't be
-// told, it says yes, so a card is never posted twice.
+// cardExists reports whether r's card is still there. When it can't tell,
+// it says yes, so a card is never posted twice.
 func (a *access) cardExists(ctx context.Context, r store.AccessRequest) bool {
 	ch, err1 := snowflake.Parse(r.ShareChannelID)
 	mid, err2 := snowflake.Parse(r.ShareMessageID)
@@ -195,11 +182,11 @@ func (a *access) cardExists(ctx context.Context, r store.AccessRequest) bool {
 	if err != nil && !isNotFound(err) {
 		a.log.Warn("check plex share card", "request", r.ID, "err", err)
 	}
-	return err == nil || !isNotFound(err)
+	return !isNotFound(err)
 }
 
-// retireCard shows on r's card that it no longer applies and takes its
-// buttons away. A card that is gone, or wasn't recorded, needs nothing.
+// retireCard marks r's card as no longer applying and takes its buttons
+// away, if the card is still there.
 func (a *access) retireCard(ctx context.Context, r store.AccessRequest, status string) error {
 	ch, err1 := snowflake.Parse(r.ShareChannelID)
 	mid, err2 := snowflake.Parse(r.ShareMessageID)
@@ -217,10 +204,8 @@ func (a *access) retireCard(ctx context.Context, r store.AccessRequest, status s
 	return a.settleShare(ctx, *msg, colorResolved, status)
 }
 
-// checkMissed catches up on what happened to tracked members while the
-// bot wasn't running, or was shutting down: it asks about those who left
-// or lost the media role, posts deleted cards again, and retires the
-// cards of those who got the role back.
+// checkMissed catches up on tracked members whose leaving or role changes
+// the bot missed while it was down.
 func (a *access) checkMissed(ctx context.Context) error {
 	a.shareMu.Lock()
 	defer a.shareMu.Unlock()
@@ -269,8 +254,8 @@ func shareButtons(id int) []discord.InteractiveComponent {
 	}
 }
 
-// removeShare removes the Plex share of request id and updates the
-// question post msg. It returns the text to show the approver.
+// removeShare removes request id's Plex access and settles its card msg.
+// It returns the text for the approver.
 func (a *access) removeShare(ctx context.Context, id int, approver string, msg discord.Message) (string, error) {
 	a.shareMu.Lock()
 	defer a.shareMu.Unlock()
@@ -288,8 +273,7 @@ func (a *access) removeShare(ctx context.Context, id int, approver string, msg d
 		_, uerr := a.store.SetShareState(fin, id, store.ShareAsked, store.ShareRemoving)
 		return "", errors.Join(err, uerr)
 	}
-	// A card left over from before the member was approved again must
-	// not remove the access that approval gave.
+	// An old card mustn't remove access a newer approval gave.
 	if newer, ok, err := a.store.NewerApproval(fin, r.UserID, id, r.PlexAccount); err != nil || ok {
 		_, uerr := a.store.SetShareState(fin, id, store.ShareAsked, store.ShareRemoving)
 		if err != nil || uerr != nil {
@@ -297,7 +281,6 @@ func (a *access) removeShare(ctx context.Context, id int, approver string, msg d
 		}
 		return "This card is out of date: they were approved again in request #" + strconv.Itoa(newer) + ". Nothing changed.", nil
 	}
-	// Nor one for a member who has the media role again.
 	if userID, err := snowflake.Parse(r.UserID); err == nil {
 		if now, ok := a.rolesNow(userID); ok && slices.Contains(now, a.mediaRole) {
 			_, uerr := a.store.SetShareState(fin, id, store.ShareActive, store.ShareRemoving)
@@ -322,15 +305,14 @@ func (a *access) removeShare(ctx context.Context, id int, approver string, msg d
 	a.log.Info("plex access removal", "request", id, "by", approver, "found", removed)
 	text, status := "Plex access removed.", "Plex access removed by "+escape(approver)
 	if !removed {
-		// Removed by hand already, or a lookup that missed: say which
-		// it might be, rather than claim there is nothing left.
+		// Removed by hand, or a lookup that missed.
 		text = "Couldn't find a share or invite for them on plex.tv. If they still have access, remove it by hand under Manage Library Access in Plex."
 		status = "Not found on plex.tv (checked by " + escape(approver) + ")"
 	}
 	return text, a.settleShare(fin, msg, colorResolved, status)
 }
 
-// keepShare records that an approver chose to keep the share.
+// keepShare records that an approver kept the access.
 func (a *access) keepShare(ctx context.Context, id int, approver string, msg discord.Message) (string, error) {
 	a.shareMu.Lock()
 	defer a.shareMu.Unlock()
@@ -342,8 +324,7 @@ func (a *access) keepShare(ctx context.Context, id int, approver string, msg dis
 	return "Kept. Their Plex access stays.", a.settleShare(ctx, msg, colorApproved, "Kept by "+escape(approver))
 }
 
-// settleShare shows the outcome on the question post and takes its
-// buttons away.
+// settleShare shows the outcome on a card and takes its buttons away.
 func (a *access) settleShare(ctx context.Context, msg discord.Message, color int, status string) error {
 	if len(msg.Embeds) == 0 {
 		return nil
@@ -358,9 +339,8 @@ func (a *access) settleShare(ctx context.Context, msg discord.Message, color int
 	return nil
 }
 
-// recoverRemoving puts shares whose removal the bot stopped halfway back
-// to asked. Their posts kept their buttons, and removing a share that is
-// already gone succeeds, so pressing Remove access again finishes it.
+// recoverRemoving reopens removals a restart interrupted. Their cards kept
+// their buttons, so pressing Remove access again finishes them.
 func (a *access) recoverRemoving(ctx context.Context) error {
 	a.shareMu.Lock()
 	defer a.shareMu.Unlock()

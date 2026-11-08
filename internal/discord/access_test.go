@@ -590,11 +590,9 @@ func TestAccessApproveDenyRace(t *testing.T) {
 		var wg sync.WaitGroup
 		texts := make([]string, 2)
 		for i, run := range []func(context.Context, int, string) (string, error){a.approve, a.deny} {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				texts[i], _ = run(ctx, 1, "Bob")
-			}()
+			})
 		}
 		wg.Wait()
 		handled := 0

@@ -11,9 +11,8 @@ import (
 	"github.com/grunclepug/homelab-bot/internal/replace"
 )
 
-// pendingTTL is how long a Replace flow waits for its next click. Discord
-// interaction tokens last 15 minutes, so the ephemeral messages can't be
-// edited after that anyway.
+// pendingTTL is how long a Replace flow waits for its next click, within
+// the 15 minutes an interaction token lasts.
 const pendingTTL = 14 * time.Minute
 
 // pendingReplace is a Replace flow between the button press and the
@@ -26,9 +25,8 @@ type pendingReplace struct {
 	expires time.Time
 }
 
-// pendingStore keeps Replace flows in memory, keyed by a random token that
-// goes into the custom IDs of the flow's components. A restart forgets
-// them, and the admin presses Replace again.
+// pendingStore keeps Replace flows in memory, keyed by a random token in
+// the custom IDs of the flow's components.
 type pendingStore struct {
 	mu      sync.Mutex
 	flows   map[string]*pendingReplace
@@ -40,8 +38,8 @@ func newPendingStore() *pendingStore {
 	return &pendingStore{flows: map[string]*pendingReplace{}, running: map[int]bool{}, now: time.Now}
 }
 
-// start marks a replacement for an issue as running. It returns false if
-// one already is, so two confirmed flows can't act on the same files.
+// start marks an issue's replacement as running, or returns false if one
+// already is.
 func (s *pendingStore) start(issueID int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

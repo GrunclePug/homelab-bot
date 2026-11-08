@@ -43,8 +43,8 @@ type relay struct {
 	issues  issueFetcher
 	log     *slog.Logger
 
-	// mu serialises events, so a quick comment or resolve can't race the
-	// post its issue is still creating.
+	// mu serialises events, so a comment can't race the post its issue is
+	// still creating.
 	mu sync.Mutex
 }
 
@@ -74,8 +74,8 @@ func (r *relay) handle(ctx context.Context, p seerr.Payload) error {
 		return fmt.Errorf("%w: %v", seerr.ErrBadPayload, err)
 	}
 
-	// The issue itself carries the season and episode. Without it the post
-	// still goes up, just without them.
+	// Only the issue itself has the season and episode; the post goes up
+	// without them if it can't be fetched.
 	is, err := r.issues.Issue(ctx, id)
 	var fetched *seerr.Issue
 	if err != nil {
@@ -144,8 +144,8 @@ func (r *relay) existing(ctx context.Context, issueID int) (*discord.Message, er
 	return msg, nil
 }
 
-// ensure returns the issue's post, creating it first if the issue has none,
-// for example because it was filed before the bot was set up.
+// ensure returns the issue's post, creating it if the issue has none, as
+// for one filed before the bot was set up.
 func (r *relay) ensure(ctx context.Context, v issueView) (*discord.Message, error) {
 	msg, err := r.existing(ctx, v.ID)
 	if err != nil || msg != nil {
@@ -208,11 +208,10 @@ func (r *relay) reply(ctx context.Context, msg *discord.Message, p seerr.Payload
 	return nil
 }
 
-// isNotFound reports whether a REST error is a 404, such as for a deleted
-// message.
+// isNotFound reports whether a REST error is a 404.
 func isNotFound(err error) bool {
-	var re *rest.Error
-	return errors.As(err, &re) && re.Response != nil && re.Response.StatusCode == http.StatusNotFound
+	re, ok := errors.AsType[*rest.Error](err)
+	return ok && re.Response != nil && re.Response.StatusCode == http.StatusNotFound
 }
 
 // issueIDFromEmbed reads the issue ID back from a post's footer.

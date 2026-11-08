@@ -140,9 +140,9 @@ To find the settings, take `PLEX_TOKEN` from the owner account (Plex's support a
 
 * **Plex**: online or offline as plex.tv sees the server, and its version.
 * **Seerr**: requests waiting for approval, approved requests not yet available, and open issues.
-* **qBittorrent**: download and upload speed, and whether it is firewalled or disconnected.
+* **qBittorrent**: download and upload speed, its version, and whether it is firewalled or disconnected.
 * **Sonarr** and **Radarr**: items in the queue and their first health warning.
-* **Storage**: free space on the largest volume Sonarr sees (Radarr's if Sonarr is down).
+* **Storage**: free space on the largest volume Sonarr sees, or Radarr's if Sonarr is down or lists none.
 * **Uptime Kuma**: with `KUMA_STATUS_URL` set, one field per group on that status page, with how many monitors are up, which are down and the group's average uptime over 24 hours (monitors Kuma has no figure for yet are left out). Up to 18 groups fit; the card says how many more there are. Create a status page in Kuma with the monitors you want on the card; the bot reads its public JSON, so it needs no Kuma credentials. Kuma caches that JSON for up to five minutes.
 
 If everything is down at once, the fields are shortened to keep the card within Discord's size limit. Each source has 10 seconds to answer. One that doesn't, or fails, shows as red without naming hosts; the full error goes to the log. The colour of the card and its first line follow the worst field.

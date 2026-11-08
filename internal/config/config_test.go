@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"maps"
 	"strings"
 	"testing"
 )
@@ -82,9 +83,7 @@ func TestLoadErrors(t *testing.T) {
 			for _, k := range tt.drop {
 				delete(env, k)
 			}
-			for k, v := range tt.set {
-				env[k] = v
-			}
+			maps.Copy(env, tt.set)
 			_, err := Load(lookup(env))
 			if err == nil {
 				t.Fatal("want error")

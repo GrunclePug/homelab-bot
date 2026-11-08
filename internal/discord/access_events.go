@@ -14,8 +14,8 @@ import (
 // decisionTimeout bounds an Approve or Deny click.
 const decisionTimeout = 2 * time.Minute
 
-// answer edits an interaction's deferred reply on a fresh context, so a
-// slow step before it can't stop the member or approver being told.
+// answer edits an interaction's deferred reply on a fresh context, so a slow
+// step before it can't stop the reply.
 func (b *Bot) answer(token, text string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -159,9 +159,8 @@ func (b *Bot) onModal(e *events.ModalSubmitInteractionCreate) {
 	}
 	token := b.drafts.put(d)
 	review := reviewMessage(d, token, checkPlexAccount(d.Plex))
-	// A form reopened from a review's Edit button replaces that private
-	// review. One opened from the public panel gets a new private message:
-	// updating its message would overwrite the panel.
+	// A form reopened from a review replaces the review. One opened from
+	// the panel gets a new message, as updating would overwrite the panel.
 	var err error
 	if fromEdit {
 		err = e.UpdateMessage(discord.NewMessageUpdate().

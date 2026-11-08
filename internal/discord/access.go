@@ -30,8 +30,8 @@ const (
 	inputNote = "note"
 )
 
-// finishTimeout bounds the steps that close a request, which run on their
-// own context so a request is never left half-handled.
+// finishTimeout bounds the steps that settle a request. They run on their
+// own context, so a request is never left half-handled.
 const finishTimeout = 30 * time.Second
 
 const (
@@ -86,12 +86,12 @@ type access struct {
 	plex      plexSharer
 	log       *slog.Logger
 
-	// currentRoles returns a member's roles as the bot last saw them, if
-	// it has seen them; nil to skip that check.
+	// currentRoles returns a member's latest known roles; nil skips the
+	// checks that use it.
 	currentRoles func(snowflake.ID) ([]snowflake.ID, bool)
 
-	// shareMu serialises the Plex share cards' state changes: member
-	// events and clicks run concurrently.
+	// shareMu serialises changes to Plex share cards, as member events and
+	// clicks run concurrently.
 	shareMu sync.Mutex
 }
 
@@ -169,8 +169,7 @@ func (a *access) submit(ctx context.Context, userID snowflake.ID, userName, plex
 	m := discord.NewMessageCreate().
 		WithEmbeds(requestEmbed(r)).
 		AddActionRow(requestButtons(id)...)
-	// Undoing a half-made request must work even if ctx has run out, or
-	// the member would be left with an open request nobody can act on.
+	// Undoing a half-made request must work even if ctx has run out.
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer cancel()
 	msg, err := a.rest.CreateMessage(a.channel, m, rest.WithCtx(ctx))
@@ -178,8 +177,7 @@ func (a *access) submit(ctx context.Context, userID snowflake.ID, userName, plex
 		return "", errors.Join(fmt.Errorf("post access request %d: %w", id, err), a.store.DeleteRequest(cleanup, id))
 	}
 	if err := a.store.SetRequestPost(ctx, id, msg.ChannelID.String(), msg.ID.String()); err != nil {
-		// A post the bot can't find again can't be updated, so take both
-		// back and let the member try again.
+		// A post the bot can't find again can't be updated: undo both.
 		return "", errors.Join(err,
 			a.rest.DeleteMessage(msg.ChannelID, msg.ID, rest.WithCtx(cleanup)),
 			a.store.DeleteRequest(cleanup, id))
@@ -188,16 +186,14 @@ func (a *access) submit(ctx context.Context, userID snowflake.ID, userName, plex
 }
 
 // approve onboards the member: Plex invite, media role, welcome DM. If the
-// invite fails nothing else happens: the request is closed as failed and
-// the member is asked to check their Plex account and request again. It
-// returns the text to show the approver.
+// invite fails, the request is closed as failed and nothing else happens.
+// It returns the text for the approver.
 func (a *access) approve(ctx context.Context, id int, approver string) (string, error) {
 	r, err := a.claim(ctx, id, approver)
 	if err != nil || r == nil {
 		return textHandled, err
 	}
-	// However ctx ends, the request mustn't be left in processing, so the
-	// steps after the invite get their own time.
+	// The steps after the invite must run however ctx ends.
 	fin, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer cancel()
 	userID, err := snowflake.Parse(r.UserID)
@@ -206,8 +202,7 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 	}
 
 	acct, err := a.plex.Invite(ctx, r.Plex)
-	// Neither is a failure: the account has access either way. A member
-	// can already have it after losing the media role and asking again.
+	// Neither is a failure: the account has access.
 	already, unknown := errors.Is(err, plex.ErrAlreadyShared), errors.Is(err, plex.ErrAccountUnknown)
 	if already || unknown {
 		a.log.Info("plex invite", "request", id, "already_shared", already, "account_unknown", unknown, "err", err)
@@ -219,9 +214,8 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 	}
 	var notes []string
 	if already && acct != "" {
-		// Track only an account this member was approved for before, as
-		// after losing the media role and asking again: an account that
-		// is someone else's must never be removable through this member.
+		// Track only an account this member was approved for before: one
+		// that is someone else's must never be removable through them.
 		own, err := a.store.HadAccount(fin, r.UserID, string(acct), id)
 		if err != nil {
 			a.log.Error("check earlier plex access", "request", id, "err", err)
@@ -235,8 +229,7 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 		notes = append(notes, "Couldn't find their Plex access on plex.tv, so if they leave, remove it by hand")
 	}
 	if err := a.store.MarkInvited(fin, id, string(acct), already); err != nil {
-		// Carry on: the member is invited. Only a restart before the end
-		// would now reopen the request instead of finishing it.
+		// Not fatal: the member is invited.
 		a.log.Error("record plex invite", "request", id, "err", err)
 	}
 	r.PlexAccount, r.PlexAlready = string(acct), already
@@ -245,7 +238,7 @@ func (a *access) approve(ctx context.Context, id int, approver string) (string, 
 
 // onboard finishes an approval once the account has Plex access: media
 // role, welcome DM, then the request is closed as approved. notes are
-// added to the list of steps on the post.
+// added to the steps shown on the post.
 func (a *access) onboard(ctx context.Context, r store.AccessRequest, userID snowflake.ID, approver string, notes ...string) (string, error) {
 	id := r.ID
 	steps := []string{"Plex invite sent to " + code(maskAccount(r.Plex))}
@@ -269,8 +262,7 @@ func (a *access) onboard(ctx context.Context, r store.AccessRequest, userID snow
 	if err := a.store.Decide(ctx, id, store.StatusApproved, approver, maskAccount(r.Plex)); err != nil {
 		return "", err
 	}
-	// Now that this approval counts, cards about earlier ones no longer
-	// apply. This runs after a restart too, through recoverInterrupted.
+	// Cards about earlier approvals no longer apply.
 	if err := a.retireOlder(ctx, r); err != nil {
 		a.log.Error("retire earlier plex share cards", "request", id, "err", err)
 	}
@@ -283,8 +275,8 @@ func (a *access) onboard(ctx context.Context, r store.AccessRequest, userID snow
 	return "Approved.\n" + body, err
 }
 
-// inviteFailed closes a request whose Plex invite failed, so the member
-// isn't stuck with an open request, and asks them to try again.
+// inviteFailed closes a request whose Plex invite failed and asks the
+// member to try again.
 func (a *access) inviteFailed(ctx context.Context, r store.AccessRequest, userID snowflake.ID, approver string, inviteErr error) (string, error) {
 	if err := a.store.Decide(ctx, r.ID, store.StatusFailed, approver, maskAccount(r.Plex)); err != nil {
 		return "", err
@@ -302,8 +294,8 @@ func (a *access) inviteFailed(ctx context.Context, r store.AccessRequest, userID
 	return "The Plex invite failed, so nothing else was done and the request is closed:\n" + inviteErr.Error() + "\n" + dmNote, err
 }
 
-// deny closes the request and tells the member. It returns the text to
-// show the approver.
+// deny closes the request and tells the member. It returns the text for
+// the approver.
 func (a *access) deny(ctx context.Context, id int, approver string) (string, error) {
 	r, err := a.claim(ctx, id, approver)
 	if err != nil || r == nil {
@@ -329,8 +321,7 @@ func (a *access) deny(ctx context.Context, id int, approver string) (string, err
 }
 
 // claim marks a pending request as being acted on. It returns nil if the
-// request isn't pending, for example because another approver got there
-// first.
+// request isn't pending, as when another approver got there first.
 func (a *access) claim(ctx context.Context, id int, approver string) (*store.AccessRequest, error) {
 	ok, err := a.store.Claim(ctx, id, store.StatusPending, store.StatusProcessing, approver)
 	if err != nil || !ok {
@@ -355,9 +346,8 @@ func (a *access) release(ctx context.Context, id int) error {
 // textInterrupted is noted on a request the bot stopped handling halfway.
 const textInterrupted = "The bot restarted before this was handled, so nothing was done. Press Approve or Deny again."
 
-// recoverInterrupted settles the requests left in processing when the bot
-// stopped halfway through a click. One whose Plex invite went out is
-// onboarded; any other goes back to pending for the approver to try again.
+// recoverInterrupted settles requests the bot stopped handling halfway: one
+// whose Plex invite went out is onboarded, any other goes back to pending.
 func (a *access) recoverInterrupted(ctx context.Context) error {
 	rs, err := a.store.Processing(ctx)
 	if err != nil {
@@ -399,8 +389,8 @@ func (a *access) dm(ctx context.Context, userID snowflake.ID, text string) error
 	return nil
 }
 
-// welcome is the DM an approved member gets. already is whether their
-// account had access before, so no new invite was sent.
+// welcome is the DM an approved member gets; already means their account
+// had access before.
 func (a *access) welcome(already bool) string {
 	plexStep := "1. Accept the Plex invite. It's in your email, or under Settings, Manage Library Access, at https://app.plex.tv."
 	if already {
@@ -418,8 +408,7 @@ func (a *access) welcome(already bool) string {
 	}, "\n")
 }
 
-// updatePost edits a request's approval post. A missing post is logged,
-// not an error: the request itself is already settled.
+// updatePost edits a request's post. A missing post is only logged.
 func (a *access) updatePost(ctx context.Context, r store.AccessRequest, change func(discord.Embed) discord.Embed, buttons bool) error {
 	ch, err1 := snowflake.Parse(r.ChannelID)
 	mid, err2 := snowflake.Parse(r.MessageID)
@@ -479,13 +468,11 @@ var markdownEscaper = strings.NewReplacer(
 	`[`, `\[`, `]`, `\]`, `#`, `\#`,
 )
 
-// escape stops Discord formatting user-typed text, including masked links
-// ([text](url)) and headings.
+// escape stops Discord formatting user-typed text, masked links included.
 func escape(s string) string { return markdownEscaper.Replace(s) }
 
-// maskAccount hides most of an email address, so nobody reading a post
-// learns it: discord2@example.com becomes d•••@e•••.com. A Plex username
-// is shown as it is.
+// maskAccount hides most of an email address: ann@example.com becomes
+// a•••@e•••.com. A Plex username is shown as it is.
 func maskAccount(s string) string {
 	local, domain, ok := strings.Cut(s, "@")
 	if !ok {
